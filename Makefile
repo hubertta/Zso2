@@ -1,7 +1,7 @@
 KDIR ?= /lib/modules/`uname -r`/build
 KDIR = /home/hubert/mim/zso/linux-3.13.3
-CFLAGS += -Wall
-LDFLAGS += -Wall
+CFLAGS += -Wall -m32
+LDFLAGS += -Wall -m32
 
 default:
 	$(MAKE) -C $(KDIR) M=$$PWD
