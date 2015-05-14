@@ -39,7 +39,11 @@ typedef struct
 {
     dma_addr_t d_input_data_ptr;
     dma_addr_t d_output_data_ptr;
+    aes128_block k_input_data_ptr;
+    aes128_block k_output_data_ptr;
+    size_t block_count;
     uint32_t xfer_task;
+    aes128_context *context;
 } aes128_task;
 
 /* Module handlers */

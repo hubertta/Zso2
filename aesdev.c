@@ -21,13 +21,13 @@ static struct class *dev_class;
 
 /*** Kernel structs **********************************************************/
 static struct file_operations aes_fops = {
-  owner : THIS_MODULE,
-  read : aes_file_read,
-  write : aes_file_write,
-  open : aes_file_open,
-  release : aes_file_release,
-  unlocked_ioctl : aes_file_ioctl,
-  compat_ioctl : aes_file_ioctl
+  .owner = THIS_MODULE,
+  .read = aes_file_read,
+  .write = aes_file_write,
+  .open = aes_file_open,
+  .release = aes_file_release,
+  .unlocked_ioctl = aes_file_ioctl,
+  .compat_ioctl = aes_file_ioctl
 };
 
 static struct pci_device_id aes_pci_ids[] = {
@@ -47,6 +47,7 @@ static struct pci_driver aes_pci = {
 /*****************************************************************************/
 
 /*** Circular buffer *********************************************************/
+
 /*
  * Number of free spots in circular buffer.
  */
@@ -72,10 +73,10 @@ static int
 cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len)
 {
   int ret;
-  
+
   if (cbuf_free (buf) < len)
     {
-      printk(KERN_WARNING "%s: not enough space in buffer!\n", __FUNCTION__);
+      printk (KERN_WARNING "%s: not enough space in buffer!\n", __FUNCTION__);
       return -1;
     }
 
@@ -91,17 +92,17 @@ cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len)
  */
 static int
 cbuf_take (struct circ_buf *buf, int len)
-{  
+{
   if (cbuf_cont (buf) < len)
     {
-      printk(KERN_WARNING "%s: not enough elements in buffer!\n", __FUNCTION__);
+      printk (KERN_WARNING "%s: not enough elements in buffer!\n", __FUNCTION__);
       return -1;
     }
-  
+
   buf->tail -= len;
   if (buf->tail < 0)
     buf->tail += AESDRV_IOBUFF_SIZE;
-  
+
   return 0;
 }
 /*****************************************************************************/
@@ -127,11 +128,33 @@ destroy_context (aes128_context *context)
 /*****************************************************************************/
 
 /*** Irq handlers ************************************************************/
-__attribute__((used))
+__attribute__ ((used))
 static irqreturn_t
-irq_handler (int irq, void *aes_dev)
+irq_handler (int irq, void *ptr)
 {
-  return 0;
+  aes128_dev *aes_dev;
+  uint32_t r0;
+  uint8_t intr;
+
+  KDEBUG ("%s: working...\n", __FUNCTION__);
+
+  aes_dev = ptr;
+  r0 = ioread32 (aes_dev->bar0);
+  intr = (r0 >> AESDEV_INTR) & 0xFF;
+  if (!intr)
+    {
+      KDEBUG ("%s: not my interrupt, IRQ_NONE!\n", __FUNCTION__);
+      return IRQ_NONE;
+    }
+
+  KDEBUG ("%s: intr=0x%x, handling...\n", __FUNCTION__, intr & 0xFF);
+
+  /* TODO: Wake up procesess waiting on read. */
+
+  /* Set all interrupts */
+  iowrite32 (r0, aes_dev->bar0);
+
+  return IRQ_HANDLED;
 }
 /*****************************************************************************/
 
@@ -152,7 +175,7 @@ aes_file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
       KDEBUG ("%s: no mode set\n", __FUNCTION__);
       return -EINVAL;
     }
-  
+
   read_buff = &context->read_buffer;
 
   if (cbuf_cont (read_buff) < 16)
@@ -186,14 +209,14 @@ aes_file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
         {
           buf[i] = ioread8 (AESDEV_AES_DATA (context->aes_dev->bar0) + i * sizeof (uint8_t));
         }
-      
+
       /* Remove the data from buffer */
       cbuf_take (&context->read_buffer, 16);
-      
+
       block_count++;
     }
-  
-  KDEBUG ("%s: at the end, I have %d bytes left in buffer.\n", __FUNCTION__, cbuf_cont(&context->read_buffer));
+
+  KDEBUG ("%s: at the end, I have %d bytes left in buffer.\n", __FUNCTION__, cbuf_cont (&context->read_buffer));
 
   /* TODO handle int overflow */
   return block_count * 16;
@@ -247,14 +270,14 @@ aes_file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
   if (context->mode == AES_UNDEF && cmd == AESDEV_IOCTL_GET_STATE)
     return -EINVAL;
 
-  if (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT)      context->mode = AES_ECB_ENCRYPT;
+  if (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AES_ECB_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT) context->mode = AES_ECB_DECRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CBC_ENCRYPT) context->mode = AES_CBC_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CBC_DECRYPT) context->mode = AES_CBC_DECRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CFB_ENCRYPT) context->mode = AES_CBC_DECRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CFB_DECRYPT) context->mode = AES_CBC_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_OFB)         context->mode = AES_OFB;
-  else if (cmd == AESDEV_IOCTL_SET_CTR)         context->mode = AES_CTR;
+  else if (cmd == AESDEV_IOCTL_SET_OFB) context->mode = AES_OFB;
+  else if (cmd == AESDEV_IOCTL_SET_CTR) context->mode = AES_CTR;
   else if (cmd == AESDEV_IOCTL_GET_STATE)
     {
       if (context->mode == AES_ECB_DECRYPT ||
@@ -276,8 +299,8 @@ aes_file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
     if (copy_from_user (&context->state, ((char *) arg) + sizeof (aes128_block),
                         sizeof (aes128_block)))
       {
-          KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
-          return -EFAULT;
+        KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
+        return -EFAULT;
       }
 
   return 0;
@@ -389,35 +412,39 @@ aes_pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   aes_dev->pci_dev = pci_dev;
   pci_set_drvdata (pci_dev, aes_dev);
 
-  //  pci_set_master (pci_dev);
-  //  pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));
-  //  pci_set_consistent_dma_mask (pci_dev, DMA_BIT_MASK (32));
+  pci_set_master (pci_dev);
+  pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));
+  pci_set_consistent_dma_mask (pci_dev, DMA_BIT_MASK (32));
 
-  //  if (request_irq(pci_dev->irq, irq_handler, IRQF_SHARED, "aesdev", NULL))
-  //    {
-  //      printk (KERN_WARNING "request_irq\n");
-  //      return -EFAULT;
-  //    }
+  if (request_irq (pci_dev->irq, irq_handler, IRQF_SHARED, "aesdev", aes_dev))
+    {
+      KDEBUG ("request_irq\n");
+      return -EFAULT;
+    }
 
   aes_devs[dev_count] = aes_dev;
   dev_count++;
 
-  printk (KERN_WARNING "Registered new aesdev\n");
+  KDEBUG ("Registered new aesdev\n");
 
   return 0;
 }
 
 void
-aes_pci_remove (struct pci_dev *dev)
+aes_pci_remove (struct pci_dev *pci_dev)
 {
   aes128_dev *aes_dev;
 
-  aes_dev = pci_get_drvdata (dev);
-  pci_iounmap (dev, aes_dev->bar0);
-  pci_release_regions (dev);
-  pci_disable_device (dev);
+  aes_dev = pci_get_drvdata (pci_dev);
+  free_irq (pci_dev->irq, aes_dev);
+  pci_clear_master (pci_dev);
+  pci_iounmap (pci_dev, aes_dev->bar0);
+  pci_release_regions (pci_dev);
+  pci_disable_device (pci_dev);
 
   kfree (aes_dev);
+
+  dev_count--;
 
   printk (KERN_WARNING "Unregistered aesdev\n");
 }
