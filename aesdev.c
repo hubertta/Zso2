@@ -46,6 +46,24 @@ static struct pci_driver aes_pci = {
 };
 /*****************************************************************************/
 
+/*** Helpers *****************************************************************/
+static int
+aes_load_key (aes128_context *context)
+{
+  void __iomem *bar0;
+  uint8_t *key;
+  int i;
+
+  bar0 = context->aes_dev->bar0;
+  key = context->key.state;
+
+  for (i = 0; i<sizeof (aes128_block); ++i)
+    iowrite8 (*key++, bar0 + AESDEV_AES_KEY (i));
+
+  return 0;
+}
+/*****************************************************************************/
+
 /*** Circular buffer *********************************************************/
 
 /*
@@ -107,6 +125,48 @@ cbuf_take (struct circ_buf *buf, int len)
 }
 /*****************************************************************************/
 
+/*** Simple list *************************************************************/
+static int
+__append_task (aes128_task *task, aes128_task *new_task)
+{
+  while (task->next_task)
+    task = task->next_task;
+  task->next_task = new_task;
+  return 0;
+}
+
+static int
+register_task (aes128_context *context, aes128_task *task)
+{
+  if (context->task_list == NULL)
+    {
+      context->task_list = task;
+      return 0;
+    }
+  else
+    {
+      return __append_task (context->task_list, task);
+    }
+}
+
+static aes128_task *
+pop_task (aes128_context *context)
+{
+  aes128_task *task;
+
+  task = context->task_list;
+  if (task == NULL)
+    {
+      KDEBUG ("%s: poping task from empty task list!\n", __FUNCTION__);
+      return NULL;
+    }
+
+  context->task_list = task->next_task;
+
+  return task;
+}
+/*****************************************************************************/
+
 /*** AES context *************************************************************/
 static void
 init_context (aes128_context *context)
@@ -133,14 +193,16 @@ static irqreturn_t
 irq_handler (int irq, void *ptr)
 {
   aes128_dev *aes_dev;
-  uint32_t r0;
+  uint32_t r0[4];
+  uint32_t r2[4];
   uint8_t intr;
 
   KDEBUG ("%s: working...\n", __FUNCTION__);
 
   aes_dev = ptr;
-  r0 = ioread32 (aes_dev->bar0);
-  intr = (r0 >> AESDEV_INTR) & 0xFF;
+  READ_4REG (r0, aes_dev->bar0);
+  READ_4REG (r2, aes_dev->bar0 + 0x40);
+  intr = r0[2] & 0xFF;
   if (!intr)
     {
       KDEBUG ("%s: not my interrupt, IRQ_NONE!\n", __FUNCTION__);
@@ -148,11 +210,12 @@ irq_handler (int irq, void *ptr)
     }
 
   KDEBUG ("%s: intr=0x%x, handling...\n", __FUNCTION__, intr & 0xFF);
+  KDEBUG ("%s: %u blocks waiting for encryption\n", __FUNCTION__, (r2[3] >> 12) & 0xFFFFFF);
 
   /* TODO: Wake up procesess waiting on read. */
 
   /* Set all interrupts */
-  iowrite32 (r0, aes_dev->bar0);
+  iowrite32 (r0[2], aes_dev->bar0 + 0x08);
 
   return IRQ_HANDLED;
 }
@@ -163,9 +226,8 @@ static ssize_t
 aes_file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 {
   aes128_context *context;
-  struct circ_buf *read_buff;
-  uint8_t *to_encrypt, *key, *iv;
-  int i, block_count;
+  aes128_task *task;
+  uint32_t r2[4];
 
   KDEBUG ("%s: working...\n", __FUNCTION__);
 
@@ -176,50 +238,35 @@ aes_file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
       return -EINVAL;
     }
 
-  read_buff = &context->read_buffer;
+  READ_4REG (r2, context->aes_dev->bar0);
+  KDEBUG ("%s: %u blocks waiting for encryption\n", __FUNCTION__, r2[3] >> 12);
 
-  if (cbuf_cont (read_buff) < 16)
+  task = pop_task (context);
+
+  if (copy_to_user (buf, task->k_output_data_ptr, task->block_count * 16))
     {
-      KDEBUG ("%s: not enough data in buffer, have only %d\n", __FUNCTION__, cbuf_cont (read_buff));
-      /* TODO: fall asleep here */
-      return 0;
+      KDEBUG ("%s: copy_to_user\n", __FUNCTION__);
+      return -EFAULT;
     }
+  
+  /* Save state to context */
+  memcpy (context->state.state, task->k_state_ptr, sizeof(aes128_block));
+  
+  /* Free DMA buffers */
+  dma_free_coherent(&context->aes_dev->pci_dev->dev,
+                    sizeof(aes128_block) * task->block_count,
+                    task->k_input_data_ptr,
+                    task->d_input_data_ptr);
+  dma_free_coherent(&context->aes_dev->pci_dev->dev,
+                    sizeof(aes128_block) * task->block_count,
+                    task->k_output_data_ptr,
+                    task->d_output_data_ptr);
+  dma_free_coherent(&context->aes_dev->pci_dev->dev,
+                    sizeof(aes128_block),
+                    task->k_state_ptr,
+                    task->d_state_ptr);
 
-  to_encrypt = (uint8_t *) context->read_buffer.buf;
-  key = (uint8_t *) & context->key;
-  iv = (uint8_t *) & context->state;
-
-  /* Set encryption key */
-  for (i = 0; i < 16; ++i)
-    {
-      iowrite8 (*key++, AESDEV_AES_KEY (context->aes_dev->bar0) + i * sizeof (uint8_t));
-    }
-
-  block_count = 0;
-  while (cbuf_cont (read_buff) >= 16)
-    {
-      /* Encrypt one block */
-      for (i = 0; i < 16; ++i)
-        {
-          iowrite8 (*to_encrypt++, AESDEV_AES_DATA (context->aes_dev->bar0) + i * sizeof (uint8_t));
-        }
-
-      /* Download data to user */
-      for (i = 0; i < 16; ++i)
-        {
-          buf[i] = ioread8 (AESDEV_AES_DATA (context->aes_dev->bar0) + i * sizeof (uint8_t));
-        }
-
-      /* Remove the data from buffer */
-      cbuf_take (&context->read_buffer, 16);
-
-      block_count++;
-    }
-
-  KDEBUG ("%s: at the end, I have %d bytes left in buffer.\n", __FUNCTION__, cbuf_cont (&context->read_buffer));
-
-  /* TODO handle int overflow */
-  return block_count * 16;
+  return task->block_count * 16;
 }
 
 static ssize_t
@@ -236,6 +283,81 @@ aes_file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   cbuf_add_from_user (&context->read_buffer, buf, len);
 
   KDEBUG ("%s: have now %d in buf\n", __FUNCTION__, cbuf_cont (&context->read_buffer));
+
+  if (cbuf_cont (&context->read_buffer) >= 16)
+    {
+      aes128_task *aes_task;
+      uint32_t r0[4];
+      uint32_t r2[4];
+
+      KDEBUG ("%s: enough data, creating new task!\n", __FUNCTION__);
+
+      aes_load_key (context);
+
+      aes_task = kmalloc (sizeof (aes128_task), GFP_KERNEL);
+      memset (aes_task, 0, sizeof (aes128_task));
+
+      aes_task->block_count = cbuf_cont (&context->read_buffer) / 16;
+      aes_task->context = context;
+      KDEBUG ("%s: encrypting %d blocks\n", __FUNCTION__, aes_task->block_count);
+
+      aes_task->k_input_data_ptr =
+              dma_alloc_coherent (&context->aes_dev->pci_dev->dev,
+                                  aes_task->block_count * sizeof (aes128_block),
+                                  &aes_task->d_input_data_ptr, GFP_KERNEL);
+      aes_task->k_output_data_ptr =
+              dma_alloc_coherent (&context->aes_dev->pci_dev->dev,
+                                  aes_task->block_count * sizeof (aes128_block),
+                                  &aes_task->d_output_data_ptr, GFP_KERNEL);      
+      aes_task->k_state_ptr =
+              dma_alloc_coherent (&context->aes_dev->pci_dev->dev,
+                                  aes_task->block_count * sizeof (aes128_block),
+                                  &aes_task->d_state_ptr, GFP_KERNEL);
+
+      /* Copy data for DMA */
+      memcpy (aes_task->k_input_data_ptr,
+              context->read_buffer.buf,
+              aes_task->block_count * sizeof (aes128_block));
+      
+      /* Remove data from queue */
+      cbuf_take (&context->read_buffer, aes_task->block_count * sizeof (aes128_block));
+
+      /* Prepare transfer block */
+      r2[0] = aes_task->d_input_data_ptr;
+      r2[1] = aes_task->d_output_data_ptr;
+      r2[2] = aes_task->d_state_ptr;
+      
+      r2[3] = 0x0000;
+      /* Set mode */
+      r2[3] |= context->mode & 0x03;
+      /* Write state */
+      r2[3] |= 0x01 << 3;
+      /* Set interrupts */
+      r2[3] |= 0x01 << 4;
+      /* Set block count */
+      r2[3] |= ((aes_task->block_count) & 0xFFFFFF) << 12;
+
+      /* Write transfer block */
+      KDEBUG ("%s: block_count=%d\n", __FUNCTION__, aes_task->block_count);
+      WRITE_4REG (r2, context->aes_dev->bar0 + 0x40);
+      KDEBUG ("%s: %u blocks waiting for encryption\n", __FUNCTION__, r2[3] >> 12);
+
+      /* Enable transfer block */
+      r0[0] = ioread32 (context->aes_dev->bar0);
+      r0[1] = ioread32 (context->aes_dev->bar0 + 0x04);
+      r0[2] = ioread32 (context->aes_dev->bar0 + 0x08);
+      r0[3] = ioread32 (context->aes_dev->bar0 + 0x0c);
+      /* Enable transfer block */
+      r0[0] |= 0x01;
+      /* Enable all interrupts */
+      r0[3] = 0xFF;
+      iowrite32 (r0[0], context->aes_dev->bar0);
+      iowrite32 (r0[3], context->aes_dev->bar0 + 0x0c);
+
+      KDEBUG ("%s: poszlo\n", __FUNCTION__);
+
+      register_task (context, aes_task);
+    }
 
   return len;
 }
@@ -411,6 +533,10 @@ aes_pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, dev_count), NULL, "aesdev%d", dev_count);
   aes_dev->pci_dev = pci_dev;
   pci_set_drvdata (pci_dev, aes_dev);
+
+  SET_FLAG (aes_dev->bar0 + AESDEV_ENABLE,
+            AESDEV_ENABLE_XFER_DATA | AESDEV_ENABLE_FETCH_CMD);
+  SET_FLAG (aes_dev->bar0 + AESDEV_INTR_ENABLE, 0xFF);
 
   pci_set_master (pci_dev);
   pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));

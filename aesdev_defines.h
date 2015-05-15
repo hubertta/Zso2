@@ -45,6 +45,11 @@
 #define AESDEV_AES_KEY_SIZE   0x10
 #define AESDEV_AES_BLOCK_SIZE   0x10
 
+#define AESDEV_BLOCK_CTRL 0x00
+#define AESDEV_BLOCK_OP 0x10
+#define AESDEV_BLOCK_XFER 0x40
+#define AESDEV_BLOCK_CMD 0x50
+
 #define AESDRV_IOBUFF_SIZE 0x1000
 #define AESDRV_CMDBUFF_SIZE 0x100
 
@@ -67,13 +72,31 @@
 
 typedef enum
 {
-  AES_ECB_ENCRYPT,
-  AES_ECB_DECRYPT,
-  AES_CBC_ENCRYPT,
-  AES_CBC_DECRYPT,
-  AES_CFB_ENCRYPT,
-  AES_CFB_DECRYPT,
-  AES_OFB,
-  AES_CTR,
-  AES_UNDEF
+  AES_ECB_ENCRYPT = AESDEV_MODE_ECB_ENCRYPT,
+  AES_ECB_DECRYPT = AESDEV_MODE_ECB_DECRYPT,
+  AES_CBC_ENCRYPT = AESDEV_MODE_CBC_ENCRYPT,
+  AES_CBC_DECRYPT = AESDEV_MODE_CBC_DECRYPT,
+  AES_CFB_ENCRYPT = AESDEV_MODE_CFB_ENCRYPT,
+  AES_CFB_DECRYPT = AESDEV_MODE_CFB_DECRYPT,
+  AES_OFB = AESDEV_MODE_OFB,
+  AES_CTR = AESDEV_MODE_CTR,
+  AES_UNDEF = 0xFF
 } AES_MODE;
+
+#define READ_4REG(r, bar)\
+    do\
+    {\
+        r[0] = ioread32(bar);\
+        r[1] = ioread32(bar + 0x04);\
+        r[2] = ioread32(bar + 0x08);\
+        r[3] = ioread32(bar + 0x0c);\
+    } while (0)
+
+#define WRITE_4REG(r, bar)\
+    do\
+    {\
+        iowrite32(r[0], bar);\
+        iowrite32(r[1], bar + 0x04);\
+        iowrite32(r[2], bar + 0x08);\
+        iowrite32(r[3], bar + 0x0c);\
+    } while (0)

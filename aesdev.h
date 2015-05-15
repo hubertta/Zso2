@@ -24,6 +24,9 @@ typedef struct
   struct mutex mutex;
 } aes128_dev;
 
+struct aes128_task;
+typedef struct aes128_task aes128_task;
+
 typedef struct
 {
   AES_MODE mode;
@@ -33,18 +36,21 @@ typedef struct
   struct circ_buf write_buffer;
   struct circ_buf read_buffer;
   struct mutex mutex;
+  aes128_task *task_list;
 } aes128_context;
 
-typedef struct
+struct aes128_task
 {
     dma_addr_t d_input_data_ptr;
     dma_addr_t d_output_data_ptr;
-    aes128_block k_input_data_ptr;
-    aes128_block k_output_data_ptr;
+    dma_addr_t d_state_ptr;
+    aes128_block *k_input_data_ptr;
+    aes128_block *k_output_data_ptr;
+    aes128_block *k_state_ptr;
     size_t block_count;
-    uint32_t xfer_task;
     aes128_context *context;
-} aes128_task;
+    struct aes128_task *next_task;
+};
 
 /* Module handlers */
 static int aesdev_init(void);
