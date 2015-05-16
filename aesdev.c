@@ -48,39 +48,48 @@ static struct pci_driver aes_pci = {
 /*****************************************************************************/
 
 /*** Helpers *****************************************************************/
+
 /* This function might sleep! */
 static int
 task_enqueue (aes128_task *task)
 {
   void __iomem *bar0;
   aes128_command *cmd;
+  aes128_context *context;
   aes_dma_addr_t d_begin_ptr, d_write_ptr;
+  unsigned long irq_flags;
   KDEBUG ("%s: entering\n", __func__);
 
-  bar0 = task->context->aes_dev->bar0;
+  context = task->context;
+  bar0 = context->aes_dev->bar0;
+
+  AESDEV_STOP (context->aes_dev);
+  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
 
   /* Enqueue commands */
   d_begin_ptr = ioread32 (bar0 + AESDEV_CMD_BEGIN_PTR);
   d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
 
   cmd = (void *) (((char *) task->context->aes_dev->k_cmd_buff_ptr) + (d_write_ptr - d_begin_ptr));
-  KDEBUG ("%s: current write ptr = %p\n", __func__, cmd);
+//  KDEBUG ("%s: current write ptr = %p\n", __func__, cmd);
   cmd->in_ptr = task->d_input_data_ptr;
   cmd->out_ptr = task->d_output_data_ptr;
   cmd->ks_ptr = task->d_ks_ptr;
   cmd->xfer_val =
           AESDEV_TASK (task->block_count, 0xFF, 0x01, task->mode);
 
-  KDEBUG ("%s: in_ptr=%p out_ptr=%p ks_ptr=%p\n", __func__, (void *) cmd->in_ptr,
-          (void*) cmd->out_ptr, (void*) cmd->ks_ptr);
-  KDEBUG ("%s: count=%d intr=%d write_state=%d mode=%d\n", __func__,
-          AESDEV_TASK_COUNT (cmd->xfer_val), AESDEV_TASK_INTR (cmd->xfer_val),
-          AESDEV_TASK_SAVE (cmd->xfer_val), AESDEV_TASK_MODE (cmd->xfer_val));
+//  KDEBUG ("%s: in_ptr=%p out_ptr=%p ks_ptr=%p\n", __func__, (void *) cmd->in_ptr,
+//          (void*) cmd->out_ptr, (void*) cmd->ks_ptr);
+//  KDEBUG ("%s: count=%d intr=%d write_state=%d mode=%d\n", __func__,
+//          AESDEV_TASK_COUNT (cmd->xfer_val), AESDEV_TASK_INTR (cmd->xfer_val),
+//          AESDEV_TASK_SAVE (cmd->xfer_val), AESDEV_TASK_MODE (cmd->xfer_val));
 
-  KDEBUG ("%s: d_read_ptr=%p, d_write_ptr=%p\n", __func__, (void*) ioread32 (bar0 + AESDEV_CMD_READ_PTR), (void*) ioread32 (bar0 + AESDEV_CMD_WRITE_PTR));
-  KDEBUG ("%s: advancing write ptr\n", __func__);
+//  KDEBUG ("%s: d_read_ptr=%p, d_write_ptr=%p\n", __func__, (void*) ioread32 (bar0 + AESDEV_CMD_READ_PTR), (void*) ioread32 (bar0 + AESDEV_CMD_WRITE_PTR));
+//  KDEBUG ("%s: advancing write ptr\n", __func__);
 
   advance_cmd_ptr (task);
+  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
+  AESDEV_START (context->aes_dev);
 
   KDEBUG ("%s: d_read_ptr=%p, d_write_ptr=%p\n", __func__, (void*) ioread32 (bar0 + AESDEV_CMD_READ_PTR), (void*) ioread32 (bar0 + AESDEV_CMD_WRITE_PTR));
 
@@ -106,7 +115,6 @@ static int
 task_create (aes128_context *context)
 {
   KDEBUG ("%s: entering\n", __func__);
-  AESDEV_STOP (context->aes_dev);
   /* Creating new task */
   if (cbuf_cont (&context->write_buffer) >= 16)
     {
@@ -164,7 +172,10 @@ task_create (aes128_context *context)
       KDEBUG ("%s: DMA copied, removing from cbuf\n", __func__);
       KDEBUG ("%s: registering task %p in context %p\n", __func__,
               (void *) aes_task, (void *) context);
-      task_register (context, aes_task);
+
+      /* Register task with context.  */      
+      INIT_LIST_HEAD (&aes_task->task_list);
+      list_add (&aes_task->task_list, &context->task_list_head);
 
       KDEBUG ("%s: enqueing task\n", __func__);
       task_enqueue (aes_task);
@@ -173,8 +184,15 @@ task_create (aes128_context *context)
 
       KDEBUG ("%s: poszlo\n", __FUNCTION__);
     }
-  AESDEV_START (context->aes_dev);
   KDEBUG ("%s: leaving\n", __func__);
+  return 0;
+}
+
+static int
+task_destroy (aes128_task *task)
+{
+  list_del (&task->task_list);
+  kfree (task);
   return 0;
 }
 
@@ -184,7 +202,7 @@ advance_cmd_ptr (aes128_task *task)
 {
   uint32_t d_begin_ptr, d_end_ptr, d_read_ptr, d_write_ptr;
   void __iomem *bar0;
-  KDEBUG ("%s: entering\n", __func__);
+//  KDEBUG ("%s: entering\n", __func__);
 
   bar0 = task->context->aes_dev->bar0;
 
@@ -193,7 +211,7 @@ advance_cmd_ptr (aes128_task *task)
   d_read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
   d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
 
-  KDEBUG ("%s: d_write_ptr was %p\n", __func__, (void *) d_write_ptr);
+//  KDEBUG ("%s: d_write_ptr was %p\n", __func__, (void *) d_write_ptr);
 
   task->d_write_ptr = d_write_ptr;
   task->d_read_ptr = d_read_ptr;
@@ -201,14 +219,14 @@ advance_cmd_ptr (aes128_task *task)
   d_write_ptr += 16;
   if (d_write_ptr == d_end_ptr)
     {
-      KDEBUG ("%s: wrapping around d_write_ptr\n", __func__);
+//      KDEBUG ("%s: wrapping around d_write_ptr\n", __func__);
       d_write_ptr = d_begin_ptr;
     }
 
-  KDEBUG ("%s: d_write_ptr will be %p\n", __func__, (void *) d_write_ptr);
+//  KDEBUG ("%s: d_write_ptr will be %p\n", __func__, (void *) d_write_ptr);
 
   iowrite32 (d_write_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
-  KDEBUG ("%s: leaving\n", __func__);
+//  KDEBUG ("%s: leaving\n", __func__);
 
   return 0;
 }
@@ -331,131 +349,89 @@ cbuf_take (void *vdest, struct circ_buf *buf, int len)
 
 /*** Simple list *************************************************************/
 static int
-__append_task (aes128_task *task, aes128_task *new_task)
+available_read_data (aes128_context *context)
 {
+  aes128_task *task, *temp_task;
+  unsigned long flags;
+  struct list_head ready_tasks;
+  aes_dma_addr_t d_read_ptr, d_write_ptr;
+  
   KDEBUG ("%s: entering\n", __func__);
-  while (task->next_task)
-    task = task->next_task;
-  task->next_task = new_task;
+  
+  INIT_LIST_HEAD (&ready_tasks);
+
+  /*** CRITICAL SECTION ****/
+  AESDEV_STOP (context->aes_dev);
+  spin_lock_irqsave (&context->aes_dev->lock, flags);
+
+  d_read_ptr = ioread32 (context->aes_dev->bar0 + AESDEV_CMD_READ_PTR);
+  d_write_ptr = ioread32 (context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR);
+
+  list_for_each_entry_safe (task, temp_task, &context->task_list_head, task_list)
+  {
+    /* TODO sprawdz to 10 razy.  */
+    if (task->d_write_ptr < d_read_ptr || task->d_read_ptr > d_read_ptr)
+      {
+        list_del (&task->task_list);
+        list_add (&task->task_list, &ready_tasks);
+      }
+  }
+
+  spin_unlock_irqrestore (&context->aes_dev->lock, flags);
+  AESDEV_START (context->aes_dev);
+  /*** END CRITICAL SECTION ****/
+  
+  KDEBUG ("%s: copying tasks to context...\n", __func__);
+  
+  list_for_each_entry_safe (task, temp_task, &ready_tasks, task_list)
+  {
+    cbuf_add_from_kernel (&context->read_buffer, (void *) task->k_output_data_ptr, task->block_count * sizeof (aes128_block));
+    task_destroy (task);
+  }
+  
   KDEBUG ("%s: leaving\n", __func__);
-  return 0;
-}
-
-static int
-__append_context (aes128_context *context, aes128_context *new_context)
-{
-  KDEBUG ("%s: entering\n", __func__);
-  while (context->next_context)
-    context = context->next_context;
-  context->next_context = new_context;
-  KDEBUG ("%s: appended %p to %p\n", __func__, new_context, context);
-  KDEBUG ("%s: leaving\n", __func__);
-  return 0;
-}
-
-static int
-task_register (aes128_context *context, aes128_task *task)
-{
-  KDEBUG ("%s: entering\n", __func__);
-  if (context->task_list == NULL)
-    {
-      context->task_list = task;
-      return 0;
-    }
-  else
-    {
-      return __append_task (context->task_list, task);
-    }
-  KDEBUG ("%s: leaving\n", __func__);
-}
-
-static int
-context_unregister (aes128_dev *aes_dev, aes128_context *context)
-{
-  aes128_context *temp, *prev;
-  KDEBUG ("%s: entering\n", __func__);
-
-  temp = aes_dev->context_list;
-  prev = NULL;
-
-  while (temp != context)
-    {
-      prev = temp;
-      temp = temp->next_context;
-    }
-  if (prev)
-    prev->next_context = temp->next_context;
-  else
-    aes_dev->context_list = temp->next_context;
-
-  KDEBUG ("%s: leaving\n", __func__);
-  return 0;
-}
-
-static int
-context_register (aes128_dev *aes_dev, aes128_context *context)
-{
-  KDEBUG ("%s: entering\n", __func__);
-  KDEBUG ("%s: registering context %p in device %p\n", __func__,
-          (void *) context, (void *) aes_dev);
-  if (aes_dev->context_list == NULL)
-    {
-      aes_dev->context_list = context;
-      context->next_context = NULL;
-      return 0;
-    }
-  KDEBUG ("%s: leaving\n", __func__);
-  return __append_context (aes_dev->context_list, context);
-}
-
-static int
-handle_task_completed (aes128_task *task)
-{
-  aes128_context *context;
-  KDEBUG ("%s: entering\n", __func__);
-
-  context = task->context;
-
-  KDEBUG ("%s: context=%p task=%p\n", __func__, context, task);
-
-  cbuf_add_from_kernel (&task->context->read_buffer, (char *) task->k_output_data_ptr, sizeof (aes128_block) * task->block_count);
-  if (HAS_STATE (task->mode))
-    {
-      memcpy (task->context->state.state, &task->k_ks_ptr[1], sizeof (aes128_block));
-    }
-
-  context->cmds_in_progress--;
-
-  if (cbuf_cont (&context->read_buffer) > 0)
-    wake_up (&context->read_queue);
-
-  KDEBUG ("%s: leaving\n", __func__);
-  return 0;
+  return cbuf_cont (&context->read_buffer);
 }
 /*****************************************************************************/
 
 /*** AES context *************************************************************/
 static void
-context_init (aes128_context *context)
+context_init (aes128_context *context, aes128_dev *aes_dev)
 {
-  KDEBUG ("%s: entering\n", __func__);
+  KDEBUG ("%s: entering, dev=%p\n", __func__, aes_dev);
   memset (context, 0, sizeof (aes128_context));
   context->mode = AES_UNDEF;
   context->read_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
   context->write_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
+  context->file_open = 1;
+  context->aes_dev = aes_dev;
+  KDEBUG ("aaaa1");
   init_waitqueue_head (&context->read_queue);
+  KDEBUG ("aaaa2");
   init_waitqueue_head (&context->write_queue);
-  spin_lock_init (&context->context_lock);
+  KDEBUG ("aaaa3");
+  mutex_init (&context->lock);
+  KDEBUG ("aaaa4");
+  INIT_LIST_HEAD (&context->context_list);
+  INIT_LIST_HEAD (&context->task_list_head);
+  KDEBUG ("aaaa5");
+  list_add (&context->context_list, &aes_dev->context_list_head);
+  KDEBUG ("aaaa6");
   KDEBUG ("%s: leaving\n", __func__);
 }
 
 static void
 context_destroy (aes128_context *context)
 {
-  return;
+  unsigned long irq_flags;
   KDEBUG ("%s: entering\n", __func__);
+  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+  list_del (&context->context_list);
+  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
+  mutex_destroy (&context->lock);
   kfree (context->read_buffer.buf);
   kfree (context->write_buffer.buf);
+  kfree (context);
   KDEBUG ("%s: leaving\n", __func__);
 }
 /*****************************************************************************/
@@ -466,95 +442,36 @@ irq_handler (int irq, void *ptr)
 {
   aes128_dev *aes_dev;
   aes128_context *context;
-  aes_dma_addr_t d_read_ptr, d_write_ptr;
   uint8_t intr;
+  unsigned long irq_flags;
+  
   KDEBUG ("%s: entering\n", __func__);
 
-  KDEBUG ("%s: working...\n", __FUNCTION__);
-
   aes_dev = ptr;
-  
-  local_irq_disable();
-
   AESDEV_STOP (aes_dev);
-
+  spin_lock_irqsave (&aes_dev->lock, irq_flags);
   intr = ioread32 (aes_dev->bar0 + AESDEV_INTR) & 0xFF;
   if (!intr)
     {
+      spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
+      AESDEV_START (aes_dev);
       KDEBUG ("%s: not my interrupt, IRQ_NONE!\n", __FUNCTION__);
-      local_irq_enable();
       return IRQ_NONE;
     }
+//  KDEBUG ("%s: intr=0x%x, handling...\n", __FUNCTION__, intr & 0xFF);
 
-  d_read_ptr = ioread32 (aes_dev->bar0 + AESDEV_CMD_READ_PTR);
-  d_write_ptr = ioread32 (aes_dev->bar0 + AESDEV_CMD_WRITE_PTR);
+  list_for_each_entry (context, &aes_dev->context_list_head, context_list)
+  {
+    wake_up (&context->read_queue);
+  }
 
-  KDEBUG ("%s: intr=0x%x, handling...\n", __FUNCTION__, intr & 0xFF);
-
-  context = aes_dev->context_list;
-  while (context)
-    {
-      aes128_task *task;
-      aes128_task *prev_task;
-
-      spin_lock_irqsave (&context->context_lock, context->intr_flags);
-
-      KDEBUG ("%s: checking context %p\n", __func__, (void *) context);
-
-      task = context->task_list;
-      prev_task = NULL;
-
-      while (task)
-        {
-          KDEBUG ("%s: checking task %p\n", __func__, (void *) task->d_input_data_ptr);
-          /* Has this task been already completed? */
-          if (d_read_ptr > task->d_write_ptr || d_read_ptr < task->d_read_ptr)
-            {
-              KDEBUG ("%s: command completed %p\n", __func__, task);
-              handle_task_completed (task);
-
-              KDEBUG ("%s: removing task from list\n", __func__);
-              /* Remove this task from list */
-              if (prev_task)
-                prev_task->next_task = task->next_task;
-              else
-                context->task_list = NULL;
-              KDEBUG ("%s: removed\n", __func__);
-            }
-          prev_task = task;
-          task = task->next_task;
-        }
-
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-
-      if (context->file_open == 0 && context->cmds_in_progress == 0)
-        {
-          aes128_context *next;
-          next = context->next_context;
-          context_unregister (context->aes_dev, context);
-          context_destroy (context);
-          kfree (context);
-          context = next;
-        }
-      else
-        context = context->next_context;
-    }
-
-  /* TODO: Wake up procesess waiting on read. */
-
-  KDEBUG ("%s: resetting interrupts\n", __func__);
+//  KDEBUG ("%s: resetting interrupts\n", __func__);
   /* Reset all interrupts */
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
-  KDEBUG ("%s: resuming device\n", __func__);
-
+  spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   AESDEV_START (aes_dev);
-
-  KDEBUG ("%s: irq_handler done\n", __func__);
   KDEBUG ("%s: leaving\n", __func__);
-  
-  local_irq_enable();
-
   return IRQ_HANDLED;
 }
 /*****************************************************************************/
@@ -565,27 +482,25 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 {
   aes128_context *context;
   int to_copy, to_copy1, to_copy2;
+  ssize_t retval;
+
   KDEBUG ("%s: entering\n", __func__);
-
   context = f->private_data;
-
-  spin_lock_irqsave (&context->context_lock, context->intr_flags);
+  mutex_lock (&context->lock);
 
   if (context->mode == AES_UNDEF)
     {
       KDEBUG ("%s: no mode set\n", __FUNCTION__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EINVAL;
+      retval = -EINVAL;
+      goto exit;
     }
 
   KDEBUG ("%s: %d bytes in read buffer\n", __func__, cbuf_cont (&context->read_buffer));
 
-  while (cbuf_cont (&context->read_buffer) == 0)
+  while (available_read_data (context) == 0)
     {
       KDEBUG ("%s: going to sleep :(\n", __func__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      wait_event (context->read_queue, cbuf_cont (&context->read_buffer) != 0);
-      spin_lock_irqsave (&context->context_lock, context->intr_flags);
+      wait_event (context->read_queue, available_read_data (context) != 0);
     }
 
   to_copy = min ((int) len, cbuf_cont (&context->read_buffer));
@@ -596,49 +511,56 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
   if (copy_to_user (buf, context->read_buffer.buf + context->read_buffer.tail, to_copy1))
     {
       KDEBUG ("%s: copy_to_user\n", __func__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EFAULT;
+      retval = -ENOMEM;
+      goto exit;
     }
   if (copy_to_user (buf + to_copy1, context->read_buffer.buf, to_copy2))
     {
       KDEBUG ("%s: copy_to_user\n", __func__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EFAULT;
+      retval = -ENOMEM;
+      goto exit;
     }
   context->read_buffer.tail = (context->read_buffer.tail + to_copy) % AESDRV_IOBUFF_SIZE;
 
   KDEBUG ("%s: %d bytes were read, %d left in buff\n", __func__, to_copy, cbuf_cont (&context->read_buffer));
   KDEBUG ("%s: leaving\n", __func__);
+  retval = to_copy;
 
-  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-  return to_copy;
+exit:
+  mutex_unlock (&context->lock);
+  return retval;
 }
 
 static ssize_t
 file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 {
   aes128_context *context;
-  KDEBUG ("%s: entering\n", __func__);
+  ssize_t retval;
+  int to_take;
 
+  KDEBUG ("%s: entering\n", __func__);
   context = f->private_data;
-  spin_lock_irqsave (&context->context_lock, context->intr_flags);
+  mutex_lock (&context->lock);
   if (context->mode == AES_UNDEF)
     {
       KDEBUG ("%s: no mode set\n", __FUNCTION__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EINVAL;
+      retval = -EINVAL;
+      goto exit;
     }
 
   KDEBUG ("%s: received %d bytes\n", __FUNCTION__, len);
   KDEBUG ("%s: had before %d in buf\n", __FUNCTION__, cbuf_cont (&context->write_buffer));
-  cbuf_add_from_user (&context->write_buffer, buf, len);
+  to_take = min (cbuf_free (&context->write_buffer), (int) len);
+  cbuf_add_from_user (&context->write_buffer, buf, to_take);
   KDEBUG ("%s: have now %d in buf\n", __FUNCTION__, cbuf_cont (&context->write_buffer));
   KDEBUG ("%s: my context is %p\n", __func__, context);
   task_create (context);
+  retval = to_take;
 
+exit:
   KDEBUG ("%s: leaving\n", __func__);
-  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-  return len;
+  mutex_unlock (&context->lock);
+  return retval;
 }
 
 static int
@@ -648,12 +570,8 @@ file_open (struct inode *i, struct file *f)
   KDEBUG ("%s: entering\n", __func__);
 
   context = kmalloc (sizeof (aes128_context), GFP_KERNEL);
-  context_init (context);
-  KDEBUG ("%s: aes_file_open: have %d in buf\n", __func__, cbuf_cont (&context->read_buffer));
-  context->aes_dev = aes_devs[iminor (i)];
-  context->file_open = 1;
   f->private_data = context;
-  context_register (context->aes_dev, context);
+  context_init (context, aes_devs[iminor (i)]);
   KDEBUG ("%s: assigned opened file to device %p at context %p\n", __func__, context->aes_dev, context);
   KDEBUG ("%s: leaving\n", __func__);
   return 0;
@@ -668,18 +586,20 @@ file_release (struct inode *i, struct file *f)
   KDEBUG ("%s: entering\n", __func__);
 
   context = f->private_data;
-  spin_lock_irqsave (&context->context_lock, context->intr_flags);
+  mutex_lock (&context->lock);
+  /* Remember that the file has been closed */
   context->file_open = 0;
-
-  KDEBUG ("%s: context %p has %d cmds in progress\n", __func__,
-          context, context->cmds_in_progress);
-
   if (context->cmds_in_progress == 0)
     {
-      context_unregister (context->aes_dev, context);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
+      /* Gdy już skończyły się wszystkie operacje a plik
+       * jest zamknięty, to mogę bezpiecznie go wywalić z 
+       * urządzenia.  */
+      mutex_unlock (&context->lock);
       context_destroy (f->private_data);
-      kfree (f->private_data);
+    }
+  else
+    {
+      mutex_unlock (&context->lock);
     }
   KDEBUG ("%s: leaving\n", __func__);
   return 0;
@@ -689,14 +609,18 @@ static long
 file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
 {
   aes128_context *context;
+  long retval;
 
   KDEBUG ("%s: entering\n", __func__);
 
   context = f->private_data;
-  spin_lock_irqsave (&context->context_lock, context->intr_flags);
+  mutex_lock (&context->lock);
 
   if (context->mode == AES_UNDEF && cmd == AESDEV_IOCTL_GET_STATE)
-    return -EINVAL;
+    {
+      retval = -EINVAL;
+      goto exit;
+    }
 
   if (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AES_ECB_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT) context->mode = AES_ECB_DECRYPT;
@@ -712,20 +636,20 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
           context->mode == AES_ECB_ENCRYPT ||
           context->mode == AES_UNDEF)
         {
-          spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-          return -EINVAL;
+          retval = -EINVAL;
+          goto exit;
         }
 
       KDEBUG ("%s: not supported yet!\n", __FUNCTION__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EFAULT;
+      retval = -EFAULT;
+      goto exit;
     }
 
   if (copy_from_user (&context->key, (void *) arg, sizeof (aes128_block)))
     {
       KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
-      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-      return -EFAULT;
+      retval = -ENOMEM;
+      goto exit;
     }
 
   if (cmd != AESDEV_IOCTL_SET_ECB_ENCRYPT && cmd != AESDEV_IOCTL_SET_ECB_DECRYPT)
@@ -733,15 +657,16 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
                         sizeof (aes128_block)))
       {
         KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
-        spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-        return -EFAULT;
+        retval = -EFAULT;
+        goto exit;
       }
 
   KDEBUG ("%s: cmd=%d mode=%d, arg=%p\n", __func__, cmd, context->mode, (void *) arg);
-
+  retval = 0;
+exit:
+  mutex_unlock (&context->lock);
   KDEBUG ("%s: leaving\n", __func__);
-  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
-  return 0;
+  return retval;
 }
 /*****************************************************************************/
 
@@ -792,6 +717,7 @@ static int
 pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
 {
   aes128_dev *aes_dev;
+  uint32_t intr;
 
   KDEBUG ("%s: entering\n", __func__);
 
@@ -807,9 +733,11 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
     }
   aes_dev = kmalloc (sizeof (aes128_dev), GFP_KERNEL);
   memset (aes_dev, 0, sizeof (aes128_dev));
+  spin_lock_init (&aes_dev->lock);
   aes_dev->bar0 = pci_iomap (pci_dev, 0, 0);
   aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, dev_count), NULL, "aesdev%d", dev_count);
   aes_dev->pci_dev = pci_dev;
+  INIT_LIST_HEAD (&aes_dev->context_list_head);
   pci_set_drvdata (pci_dev, aes_dev);
 
   pci_set_master (pci_dev);
@@ -828,16 +756,17 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_STATE_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_TASK);
   init_cmd_buffer (aes_dev);
-
-  /* Włącz przerwania */
-  iowrite32 (0xFF, aes_dev->bar0 + AESDEV_INTR_ENABLE);
-
-  /* Na wszelki wypadek */
-  AESDEV_STOP (aes_dev);
+  
+  /* Skasuj ewentualne przerwania */
+  intr = ioread32 (aes_dev->bar0 + AESDEV_INTR);
+  iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   /* Zarejestruj urządzenie w sterowniku */
   aes_devs[dev_count] = aes_dev;
   dev_count++;
+
+  /* Włącz przerwania */
+  iowrite32 (0xFF, aes_dev->bar0 + AESDEV_INTR_ENABLE);
 
   KDEBUG ("Registered new aesdev\n");
   KDEBUG ("%s: leaving\n", __func__);
@@ -895,7 +824,7 @@ pci_suspend (struct pci_dev *dev, pm_message_t state)
 static int
 aesdrv_init (void)
 {
-  KDEBUG ("%s: entering\n", __func__);
+  KDEBUG ("%s: hello\n", __func__);
 
   /* Rejestracja majora */
   major = register_chrdev (0, "aesdev", &aes_fops);
@@ -910,8 +839,6 @@ aesdrv_init (void)
       return -EFAULT;
     }
 
-  KDEBUG ("%s: leaving\n", __func__);
-
   return 0;
 }
 
@@ -921,6 +848,7 @@ aesdrv_cleanup (void)
   pci_unregister_driver (&aes_pci);
   device_destroy (dev_class, MKDEV (major, 0));
   class_destroy (dev_class);
+  KDEBUG ("%s: bye\n", __func__);
 }
 
 module_init (aesdrv_init);

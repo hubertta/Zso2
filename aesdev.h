@@ -4,6 +4,7 @@
 #include "aesdev_ioctl.h"
 #include "aesdev_defines.h"
 
+#include <linux/list.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
 #include <linux/circ_buf.h>
@@ -43,11 +44,10 @@ struct aes128_dev
   
   aes128_command *k_cmd_buff_ptr;
   aes_dma_addr_t d_cmd_buff_ptr;
-    
-  aes128_context *context_list;
   
-  spinlock_t dev_lock;
-  unsigned long intr_flags;
+  spinlock_t lock;
+  
+  struct list_head context_list_head;
 };
 
 struct aes128_context
@@ -63,15 +63,13 @@ struct aes128_context
   
   wait_queue_head_t read_queue;
   wait_queue_head_t write_queue;
+  struct mutex lock;
   
-  aes128_task *task_list;
-  struct aes128_context *next_context;
+  char file_open;                   /* Is the file still open? */
+  int cmds_in_progress;             /* How many commends are in device queue? */
   
-  char file_open;
-  int cmds_in_progress;
-  
-  spinlock_t context_lock;
-  unsigned long intr_flags;
+  struct list_head context_list;
+  struct list_head task_list_head;
 };
 
 /* Complete set of information for one command */
@@ -88,7 +86,6 @@ struct aes128_task
   aes_dma_addr_t d_read_ptr;
   aes_dma_addr_t d_write_ptr;
   AES_MODE mode;
-  struct aes128_task *next_task;
   struct list_head task_list;
 };
 
@@ -127,7 +124,6 @@ static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, int len
 static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len);
 
 /* Helpers */
-static int task_register (aes128_context *context, aes128_task *task);
 static int advance_cmd_ptr (aes128_task *task);
 
 #endif /* _AESDEV_H */
