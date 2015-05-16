@@ -46,6 +46,9 @@ struct aes128_dev
   aes_dma_addr_t d_cmd_buff_ptr;
   
   spinlock_t lock;
+  wait_queue_head_t command_queue;
+  
+  size_t command_space;
   
   struct list_head context_list_head;
 };
@@ -122,8 +125,5 @@ static int cbuf_free (const struct circ_buf *buf);
 static int cbuf_take (void *dest, struct circ_buf *buf, int len);
 static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, int len);
 static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len);
-
-/* Helpers */
-static int advance_cmd_ptr (aes128_task *task);
 
 #endif /* _AESDEV_H */
