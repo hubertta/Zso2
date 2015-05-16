@@ -40,38 +40,41 @@ struct aes128_dev
   void __iomem *bar0;
   struct device *sys_dev;
   struct pci_dev *pci_dev;
+  
   aes128_command *k_cmd_buff_ptr;
   aes_dma_addr_t d_cmd_buff_ptr;
-  struct mutex mutex;
+    
   aes128_context *context_list;
+  
+  spinlock_t dev_lock;
+  unsigned long intr_flags;
 };
-
-struct aes128_task;
-typedef struct aes128_task aes128_task;
 
 struct aes128_context
 {
   AES_MODE mode;
+  
   aes128_block key;
   aes128_block state;
   aes128_dev *aes_dev;
+  
   struct circ_buf write_buffer;
   struct circ_buf read_buffer;
-  struct mutex mutex;
+  
+  wait_queue_head_t read_queue;
+  wait_queue_head_t write_queue;
+  
   aes128_task *task_list;
   struct aes128_context *next_context;
+  
   char file_open;
   int cmds_in_progress;
+  
+  spinlock_t context_lock;
+  unsigned long intr_flags;
 };
 
-struct aes128_command
-{
-  uint32_t in_ptr;
-  uint32_t out_ptr;
-  uint32_t ks_ptr;
-  uint32_t xfer_val;
-};
-
+/* Complete set of information for one command */
 struct aes128_task
 {
   uint32_t d_input_data_ptr;
@@ -86,11 +89,21 @@ struct aes128_task
   aes_dma_addr_t d_write_ptr;
   AES_MODE mode;
   struct aes128_task *next_task;
+  struct list_head task_list;
+};
+
+/* This is to reflect single entry in CMD block */
+struct aes128_command
+{
+  uint32_t in_ptr;
+  uint32_t out_ptr;
+  uint32_t ks_ptr;
+  uint32_t xfer_val;
 };
 
 /* Module handlers */
-static int aesdev_init (void);
-static void aesdev_cleanup (void);
+static int aesdrv_init (void);
+static void aesdrv_cleanup (void);
 
 /* File operations */
 static ssize_t file_read (struct file *, char __user *, size_t, loff_t *);
@@ -114,7 +127,7 @@ static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, int len
 static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len);
 
 /* Helpers */
-static int register_task (aes128_context *context, aes128_task *task);
+static int task_register (aes128_context *context, aes128_task *task);
 static int advance_cmd_ptr (aes128_task *task);
 
 #endif /* _AESDEV_H */

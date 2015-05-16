@@ -90,7 +90,6 @@ test_ecb ()
   set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT);
 
   write_block (test_block);
-  usleep (100000);
   read_block (test_result);
 
   for (i = 0; i < 16; ++i)
@@ -107,7 +106,6 @@ test_ecb ()
   set_mode (AESDEV_IOCTL_SET_ECB_DECRYPT);
 
   write_block (test_enc_block);
-  usleep (100000);
   read_block (test_result);
   ok = 1;
   for (i = 0; i < 16; ++i)
@@ -129,14 +127,12 @@ test_cbc ()
   set_mode (AESDEV_IOCTL_SET_CBC_ENCRYPT);
 
   write_block (test_block);
-  usleep (100000);
   read_block (test_result);
 
   set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT);
   for (i = 0; i < 16; ++i)
     test_manual[i] = test_iv[i] ^ test_block[i];
   write_block (test_manual);
-  usleep (100000);
   read_block (test_manual);
 
   ok = 1;
@@ -153,7 +149,6 @@ test_cbc ()
 
   set_mode (AESDEV_IOCTL_SET_CBC_DECRYPT);
   write_block (test_result);
-  usleep (100000);
   read_block (test_result);
 
   ok = 1;
@@ -174,12 +169,10 @@ test_cfb ()
   set_mode (AESDEV_IOCTL_SET_CFB_ENCRYPT);
 
   write_block (test_block);
-  usleep (100000);
   read_block (test_result);
 
   set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT);
   write_block (test_iv);
-  usleep (100000);
   read_block (test_manual);
   for (i = 0; i < 16; ++i)
     test_manual[i] = test_manual[i] ^ test_block[i];
@@ -198,7 +191,6 @@ test_cfb ()
 
   set_mode (AESDEV_IOCTL_SET_CFB_DECRYPT);
   write_block (test_result);
-  usleep (100000);
   read_block (test_result);
 
   ok = 1;
@@ -219,12 +211,10 @@ test_ofb ()
   set_mode (AESDEV_IOCTL_SET_OFB);
 
   write_block (test_block);
-  usleep (100000);
   read_block (test_result);
 
   set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT);
   write_block (test_iv);
-  usleep (100000);
   read_block (test_manual);
   for (i = 0; i < 16; ++i)
     test_manual[i] = test_manual[i] ^ test_block[i];
@@ -243,7 +233,6 @@ test_ofb ()
 
   set_mode (AESDEV_IOCTL_SET_OFB);
   write_block (test_result);
-  usleep (100000);
   read_block (test_result);
 
   ok = 1;
@@ -264,12 +253,10 @@ test_ctr ()
   set_mode (AESDEV_IOCTL_SET_CTR);
 
   write_block (test_block);
-  usleep (100000);
   read_block (test_result);
 
   set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT);
   write_block (test_iv);
-  usleep (100000);
   read_block (test_manual);
   for (i = 0; i < 16; ++i)
     test_manual[i] = test_manual[i] ^ test_block[i];
@@ -288,7 +275,6 @@ test_ctr ()
 
   set_mode (AESDEV_IOCTL_SET_CTR);
   write_block (test_result);
-  usleep (100000);
   read_block (test_result);
 
   ok = 1;
@@ -306,16 +292,15 @@ main ()
   int i;
 
   open_file ();
-
-  for (i = 0; i < 0x1000; ++i)
-    {
-      printf("0x%04x/0x%04x\n", i, 0x1000);
-      test_ecb ();
-      test_cbc ();
-      test_cfb ();
-      test_ofb ();
-      test_ctr ();
-    }
+  
+    for (i = 0; i < 0x100; ++i)
+      {
+        test_ecb ();
+        test_cbc ();
+        test_cfb ();
+        test_ofb ();
+        test_ctr ();
+      }
 
   close (fd);
 

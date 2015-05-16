@@ -105,3 +105,4 @@ typedef enum
         iowrite32(r[2], bar + 0x08);\
         iowrite32(r[3], bar + 0x0c);\
     } while (0)
+

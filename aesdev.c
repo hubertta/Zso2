@@ -9,6 +9,9 @@
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <asm/uaccess.h>
+#include <linux/spinlock_types.h>
+#include <asm/spinlock_types.h>
+#include <asm/spinlock.h>
 
 MODULE_LICENSE ("GPL");
 
@@ -45,28 +48,9 @@ static struct pci_driver aes_pci = {
 /*****************************************************************************/
 
 /*** Helpers *****************************************************************/
-__attribute__ ((used))
-static int
-aes_load_key (aes128_context *context)
-{
-  void __iomem *bar0;
-  uint8_t *key;
-  int i;
-  KDEBUG ("%s: entering\n", __func__);
-
-  bar0 = context->aes_dev->bar0;
-  key = context->key.state;
-
-  for (i = 0; i<sizeof (aes128_block); ++i)
-    iowrite8 (*key++, bar0 + AESDEV_AES_KEY (i));
-
-  KDEBUG ("%s: leaving\n", __func__);
-  return 0;
-}
-
 /* This function might sleep! */
 static int
-enqueue_task (aes128_task *task)
+task_enqueue (aes128_task *task)
 {
   void __iomem *bar0;
   aes128_command *cmd;
@@ -160,15 +144,15 @@ task_create (aes128_context *context)
       KDEBUG ("%s: DMA alloc ok, copying\n", __func__);
 
       /* Copy data for DMA */
-//      memcpy (aes_task->k_input_data_ptr,
-//              context->write_buffer.buf,
-//              aes_task->block_count * sizeof (aes128_block));
+      /* Data blocks */
       cbuf_take (aes_task->k_input_data_ptr,
                  &context->write_buffer,
                  aes_task->block_count * sizeof (aes128_block));
+      /* Key */
       memcpy (aes_task->k_ks_ptr,
               context->key.state,
               sizeof (aes128_block));
+      /* State */
       if (HAS_STATE (aes_task->mode))
         {
           KDEBUG ("%s: mode with state, loading iv\n", __func__);
@@ -178,16 +162,12 @@ task_create (aes128_context *context)
         }
 
       KDEBUG ("%s: DMA copied, removing from cbuf\n", __func__);
-
-      /* Remove data from queue */
-//      cbuf_take (&context->write_buffer, aes_task->block_count * sizeof (aes128_block));
-
       KDEBUG ("%s: registering task %p in context %p\n", __func__,
               (void *) aes_task, (void *) context);
-      register_task (context, aes_task);
+      task_register (context, aes_task);
 
       KDEBUG ("%s: enqueing task\n", __func__);
-      enqueue_task (aes_task);
+      task_enqueue (aes_task);
 
       context->cmds_in_progress++;
 
@@ -298,10 +278,10 @@ cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len)
       printk (KERN_WARNING "%s: not enough space in buffer!\n", __FUNCTION__);
       return -1;
     }
-  
+
   KDEBUG ("%s: first user's=%02x\n", __func__, data[0] & 0xFF);
 
-  len1 = min(len, CIRC_SPACE_TO_END(buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
+  len1 = min (len, CIRC_SPACE_TO_END (buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
   len2 = len - len1;
   /* TODO split into two !! */
   ret = copy_from_user (buf->buf + buf->head, data, len1);
@@ -310,7 +290,7 @@ cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len)
   KDEBUG ("%s: head before=%d tail before=%d len=%d len1=%d len2=%d\n", __func__, buf->head, buf->tail, len, len1, len2);
   buf->head = (buf->head + len) % AESDRV_IOBUFF_SIZE;
   KDEBUG ("%s: head after=%d tail after=%d\n", __func__, buf->head, buf->tail);
-  
+
   KDEBUG ("%s: first at tail=%02x last at head=%02x\n", __func__,
           *(buf->buf + buf->tail), *(buf->buf + buf->head));
 
@@ -326,19 +306,19 @@ cbuf_take (void *vdest, struct circ_buf *buf, int len)
 {
   int len1, len2;
   char *dest;
-  
+
   dest = vdest;
-  
+
   KDEBUG ("%s: entering\n", __func__);
   if (cbuf_cont (buf) < len)
     {
       printk (KERN_WARNING "%s: not enough elements in buffer!\n", __FUNCTION__);
       return -1;
     }
-  
-  len1 = min(len, CIRC_CNT_TO_END(buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
+
+  len1 = min (len, CIRC_CNT_TO_END (buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
   len2 = len - len1;
-  
+
   memcpy (dest, buf->buf + buf->tail, len1);
   memcpy (dest + len1, buf->buf, len2);
 
@@ -374,7 +354,7 @@ __append_context (aes128_context *context, aes128_context *new_context)
 }
 
 static int
-register_task (aes128_context *context, aes128_task *task)
+task_register (aes128_context *context, aes128_task *task)
 {
   KDEBUG ("%s: entering\n", __func__);
   if (context->task_list == NULL)
@@ -389,28 +369,8 @@ register_task (aes128_context *context, aes128_task *task)
   KDEBUG ("%s: leaving\n", __func__);
 }
 
-__attribute__ ((used))
-static aes128_task *
-pop_task (aes128_context *context)
-{
-  aes128_task *task;
-  KDEBUG ("%s: entering\n", __func__);
-
-  task = context->task_list;
-  if (task == NULL)
-    {
-      KDEBUG ("%s: poping task from empty task list!\n", __FUNCTION__);
-      return NULL;
-    }
-
-  context->task_list = task->next_task;
-
-  KDEBUG ("%s: leaving\n", __func__);
-  return task;
-}
-
 static int
-deregister_context (aes128_dev *aes_dev, aes128_context *context)
+context_unregister (aes128_dev *aes_dev, aes128_context *context)
 {
   aes128_context *temp, *prev;
   KDEBUG ("%s: entering\n", __func__);
@@ -433,7 +393,7 @@ deregister_context (aes128_dev *aes_dev, aes128_context *context)
 }
 
 static int
-register_context (aes128_dev *aes_dev, aes128_context *context)
+context_register (aes128_dev *aes_dev, aes128_context *context)
 {
   KDEBUG ("%s: entering\n", __func__);
   KDEBUG ("%s: registering context %p in device %p\n", __func__,
@@ -466,6 +426,9 @@ handle_task_completed (aes128_task *task)
 
   context->cmds_in_progress--;
 
+  if (cbuf_cont (&context->read_buffer) > 0)
+    wake_up (&context->read_queue);
+
   KDEBUG ("%s: leaving\n", __func__);
   return 0;
 }
@@ -473,25 +436,26 @@ handle_task_completed (aes128_task *task)
 
 /*** AES context *************************************************************/
 static void
-init_context (aes128_context *context)
+context_init (aes128_context *context)
 {
   KDEBUG ("%s: entering\n", __func__);
   memset (context, 0, sizeof (aes128_context));
   context->mode = AES_UNDEF;
   context->read_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
   context->write_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
-  mutex_init (&context->mutex);
+  init_waitqueue_head (&context->read_queue);
+  init_waitqueue_head (&context->write_queue);
+  spin_lock_init (&context->context_lock);
   KDEBUG ("%s: leaving\n", __func__);
 }
 
 static void
-destroy_context (aes128_context *context)
+context_destroy (aes128_context *context)
 {
   return;
   KDEBUG ("%s: entering\n", __func__);
   kfree (context->read_buffer.buf);
   kfree (context->write_buffer.buf);
-  mutex_destroy (&context->mutex);
   KDEBUG ("%s: leaving\n", __func__);
 }
 /*****************************************************************************/
@@ -509,6 +473,8 @@ irq_handler (int irq, void *ptr)
   KDEBUG ("%s: working...\n", __FUNCTION__);
 
   aes_dev = ptr;
+  
+  local_irq_disable();
 
   AESDEV_STOP (aes_dev);
 
@@ -516,6 +482,7 @@ irq_handler (int irq, void *ptr)
   if (!intr)
     {
       KDEBUG ("%s: not my interrupt, IRQ_NONE!\n", __FUNCTION__);
+      local_irq_enable();
       return IRQ_NONE;
     }
 
@@ -529,6 +496,8 @@ irq_handler (int irq, void *ptr)
     {
       aes128_task *task;
       aes128_task *prev_task;
+
+      spin_lock_irqsave (&context->context_lock, context->intr_flags);
 
       KDEBUG ("%s: checking context %p\n", __func__, (void *) context);
 
@@ -556,12 +525,14 @@ irq_handler (int irq, void *ptr)
           task = task->next_task;
         }
 
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
+
       if (context->file_open == 0 && context->cmds_in_progress == 0)
         {
           aes128_context *next;
           next = context->next_context;
-          deregister_context (context->aes_dev, context);
-          destroy_context (context);
+          context_unregister (context->aes_dev, context);
+          context_destroy (context);
           kfree (context);
           context = next;
         }
@@ -581,6 +552,8 @@ irq_handler (int irq, void *ptr)
 
   KDEBUG ("%s: irq_handler done\n", __func__);
   KDEBUG ("%s: leaving\n", __func__);
+  
+  local_irq_enable();
 
   return IRQ_HANDLED;
 }
@@ -594,30 +567,42 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
   int to_copy, to_copy1, to_copy2;
   KDEBUG ("%s: entering\n", __func__);
 
-  KDEBUG ("%s: working...\n", __FUNCTION__);
-
   context = f->private_data;
+
+  spin_lock_irqsave (&context->context_lock, context->intr_flags);
+
   if (context->mode == AES_UNDEF)
     {
       KDEBUG ("%s: no mode set\n", __FUNCTION__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EINVAL;
     }
 
   KDEBUG ("%s: %d bytes in read buffer\n", __func__, cbuf_cont (&context->read_buffer));
 
+  while (cbuf_cont (&context->read_buffer) == 0)
+    {
+      KDEBUG ("%s: going to sleep :(\n", __func__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
+      wait_event (context->read_queue, cbuf_cont (&context->read_buffer) != 0);
+      spin_lock_irqsave (&context->context_lock, context->intr_flags);
+    }
+
   to_copy = min ((int) len, cbuf_cont (&context->read_buffer));
-  to_copy1 = min(to_copy, CIRC_CNT_TO_END(context->read_buffer.head,
-                                          context->read_buffer.tail,
-                                          AESDRV_IOBUFF_SIZE));
+  to_copy1 = min (to_copy, CIRC_CNT_TO_END (context->read_buffer.head,
+                                            context->read_buffer.tail,
+                                            AESDRV_IOBUFF_SIZE));
   to_copy2 = to_copy - to_copy1;
   if (copy_to_user (buf, context->read_buffer.buf + context->read_buffer.tail, to_copy1))
     {
       KDEBUG ("%s: copy_to_user\n", __func__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EFAULT;
     }
   if (copy_to_user (buf + to_copy1, context->read_buffer.buf, to_copy2))
     {
       KDEBUG ("%s: copy_to_user\n", __func__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EFAULT;
     }
   context->read_buffer.tail = (context->read_buffer.tail + to_copy) % AESDRV_IOBUFF_SIZE;
@@ -625,6 +610,7 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
   KDEBUG ("%s: %d bytes were read, %d left in buff\n", __func__, to_copy, cbuf_cont (&context->read_buffer));
   KDEBUG ("%s: leaving\n", __func__);
 
+  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
   return to_copy;
 }
 
@@ -635,9 +621,11 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   KDEBUG ("%s: entering\n", __func__);
 
   context = f->private_data;
+  spin_lock_irqsave (&context->context_lock, context->intr_flags);
   if (context->mode == AES_UNDEF)
     {
       KDEBUG ("%s: no mode set\n", __FUNCTION__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EINVAL;
     }
 
@@ -649,6 +637,7 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   task_create (context);
 
   KDEBUG ("%s: leaving\n", __func__);
+  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
   return len;
 }
 
@@ -659,12 +648,12 @@ file_open (struct inode *i, struct file *f)
   KDEBUG ("%s: entering\n", __func__);
 
   context = kmalloc (sizeof (aes128_context), GFP_KERNEL);
-  init_context (context);
+  context_init (context);
   KDEBUG ("%s: aes_file_open: have %d in buf\n", __func__, cbuf_cont (&context->read_buffer));
   context->aes_dev = aes_devs[iminor (i)];
   context->file_open = 1;
   f->private_data = context;
-  register_context (context->aes_dev, context);
+  context_register (context->aes_dev, context);
   KDEBUG ("%s: assigned opened file to device %p at context %p\n", __func__, context->aes_dev, context);
   KDEBUG ("%s: leaving\n", __func__);
   return 0;
@@ -679,6 +668,7 @@ file_release (struct inode *i, struct file *f)
   KDEBUG ("%s: entering\n", __func__);
 
   context = f->private_data;
+  spin_lock_irqsave (&context->context_lock, context->intr_flags);
   context->file_open = 0;
 
   KDEBUG ("%s: context %p has %d cmds in progress\n", __func__,
@@ -686,8 +676,9 @@ file_release (struct inode *i, struct file *f)
 
   if (context->cmds_in_progress == 0)
     {
-      deregister_context (context->aes_dev, context);
-      destroy_context (f->private_data);
+      context_unregister (context->aes_dev, context);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
+      context_destroy (f->private_data);
       kfree (f->private_data);
     }
   KDEBUG ("%s: leaving\n", __func__);
@@ -702,6 +693,7 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
   KDEBUG ("%s: entering\n", __func__);
 
   context = f->private_data;
+  spin_lock_irqsave (&context->context_lock, context->intr_flags);
 
   if (context->mode == AES_UNDEF && cmd == AESDEV_IOCTL_GET_STATE)
     return -EINVAL;
@@ -719,15 +711,20 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
       if (context->mode == AES_ECB_DECRYPT ||
           context->mode == AES_ECB_ENCRYPT ||
           context->mode == AES_UNDEF)
-        return -EINVAL;
+        {
+          spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
+          return -EINVAL;
+        }
 
       KDEBUG ("%s: not supported yet!\n", __FUNCTION__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EFAULT;
     }
 
   if (copy_from_user (&context->key, (void *) arg, sizeof (aes128_block)))
     {
       KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
+      spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
       return -EFAULT;
     }
 
@@ -736,12 +733,14 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
                         sizeof (aes128_block)))
       {
         KDEBUG ("%s: copy_from_user\n", __FUNCTION__);
+        spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
         return -EFAULT;
       }
 
   KDEBUG ("%s: cmd=%d mode=%d, arg=%p\n", __func__, cmd, context->mode, (void *) arg);
 
   KDEBUG ("%s: leaving\n", __func__);
+  spin_unlock_irqrestore (&context->context_lock, context->intr_flags);
   return 0;
 }
 /*****************************************************************************/
@@ -776,11 +775,11 @@ init_cmd_buffer (aes128_dev *aes_dev)
 }
 
 static int
-destroy_aes_device (aes128_dev *aes_dev)
+aes_dev_destroy (aes128_dev *aes_dev)
 {
   KDEBUG ("%s: entering\n", __func__);
 
-  mutex_destroy (&aes_dev->mutex);
+  /* TODO */
   kfree (aes_dev);
 
   KDEBUG ("%s: leaving\n", __func__);
@@ -860,7 +859,7 @@ pci_remove (struct pci_dev *pci_dev)
   pci_release_regions (pci_dev);
   pci_disable_device (pci_dev);
 
-  destroy_aes_device (aes_dev);
+  aes_dev_destroy (aes_dev);
 
   dev_count--;
 
@@ -894,7 +893,7 @@ pci_suspend (struct pci_dev *dev, pm_message_t state)
 /*****************************************************************************/
 
 static int
-aesdev_init (void)
+aesdrv_init (void)
 {
   KDEBUG ("%s: entering\n", __func__);
 
@@ -917,12 +916,12 @@ aesdev_init (void)
 }
 
 static void
-aesdev_cleanup (void)
+aesdrv_cleanup (void)
 {
   pci_unregister_driver (&aes_pci);
   device_destroy (dev_class, MKDEV (major, 0));
   class_destroy (dev_class);
 }
 
-module_init (aesdev_init);
-module_exit (aesdev_cleanup);
+module_init (aesdrv_init);
+module_exit (aesdrv_cleanup);
