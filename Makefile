@@ -3,9 +3,10 @@ KDIR = /home/hubert/mim/zso/linux-3.13.3
 CFLAGS += -Wall -m32
 LDFLAGS += -Wall -m32
 
-default:
+default: test1
 	$(MAKE) -C $(KDIR) M=$$PWD
 	cp aesdev.ko ../../hshare/
+	cp test1 ../../hshare/
 
 install:
 	$(MAKE) -C $(KDIR) M=$$PWD modules_install

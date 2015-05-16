@@ -10,3 +10,4 @@ modules.order
 .tmp_versions/
 .idea/
 nbproject/
+/test1

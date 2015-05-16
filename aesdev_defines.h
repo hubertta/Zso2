@@ -53,6 +53,9 @@
 #define AESDRV_IOBUFF_SIZE 0x1000
 #define AESDRV_CMDBUFF_SIZE 0x100
 
+#define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
+#define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
+
 #define SET_FLAG(reg, flag)\
   do\
   {\
@@ -82,6 +85,8 @@ typedef enum
   AES_CTR = AESDEV_MODE_CTR,
   AES_UNDEF = 0xFF
 } AES_MODE;
+
+#define HAS_STATE(mode) ((mode) != AES_ECB_ENCRYPT && mode != AES_ECB_DECRYPT)
 
 #define READ_4REG(r, bar)\
     do\
