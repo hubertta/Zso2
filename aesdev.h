@@ -44,6 +44,9 @@ struct aes128_dev
   
   aes128_command *k_cmd_buff_ptr;
   aes_dma_addr_t d_cmd_buff_ptr;
+  aes_dma_addr_t d_cmd_read_ptr;    /* NEVER go beyond that! */
+  aes_dma_addr_t d_cmd_write_ptr;
+  aes_dma_addr_t d_cmd_end_ptr;
   
   spinlock_t lock;
   wait_queue_head_t command_queue;

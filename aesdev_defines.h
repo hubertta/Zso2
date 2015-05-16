@@ -51,7 +51,7 @@
 #define AESDEV_BLOCK_CMD 0x50
 
 #define AESDRV_IOBUFF_SIZE 0x1000
-#define AESDRV_CMDBUFF_SIZE 0x100
+#define AESDRV_CMDBUFF_SIZE 0x1000
 
 #define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
 #define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
@@ -72,6 +72,7 @@
   } while (0)
 
 #define KDEBUG(...) printk(KERN_WARNING __VA_ARGS__)
+//#define KDEBUG(...)
 
 typedef enum
 {
