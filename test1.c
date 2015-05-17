@@ -189,10 +189,13 @@ test_cfb ()
     if (test_result[i] != test_manual[i])
       ok = 0;
 
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
-  //  fprintf (stderr, "\n");
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_manual[i] & 0xFF);
-  //  fprintf (stderr, "\n");
+  if (!ok)
+    {
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
+      fprintf (stderr, "\n");
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_manual[i] & 0xFF);
+      fprintf (stderr, "\n");
+    }
 
   fprintf (stderr, "CFB encrypt %s\n", (ok ? "ok" : "err"));
 
@@ -309,7 +312,7 @@ main ()
 
   for (i = 0; i < 0x1000; ++i)
     {
-      printf("0x%04x/0x%04x\n", i, 0x1000);
+      printf ("0x%04x/0x%04x\n", i, 0x1000);
       test_ecb ();
       test_cbc ();
       test_cfb ();

@@ -121,12 +121,12 @@ test_ecb ()
     if (test_result2[i] != test_block[i])
       ok = 0;
 
-//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
-//  fprintf (stderr, "\n");
-//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
-//  fprintf (stderr, "\n");
-//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_enc_block[i] & 0xFF);
-//  fprintf (stderr, "\n");
+  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
+  //  fprintf (stderr, "\n");
+  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
+  //  fprintf (stderr, "\n");
+  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_enc_block[i] & 0xFF);
+  //  fprintf (stderr, "\n");
   fprintf (stderr, "ECB decrypt %s\n", (ok ? "ok" : "err"));
   if (!ok)
     {
@@ -203,10 +203,13 @@ test_cfb ()
     if (test_result[i] != test_manual[i])
       ok = 0;
 
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
-  //  fprintf (stderr, "\n");
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_manual[i] & 0xFF);
-  //  fprintf (stderr, "\n");
+  if (!ok)
+    {
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
+      fprintf (stderr, "\n");
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_manual[i] & 0xFF);
+      fprintf (stderr, "\n");
+    }
 
   fprintf (stderr, "CFB encrypt %s\n", (ok ? "ok" : "err"));
 
@@ -327,4 +330,3 @@ main ()
 
   return (EXIT_SUCCESS);
 }
-

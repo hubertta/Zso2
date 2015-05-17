@@ -77,7 +77,7 @@ task_enqueue (aes128_task *task)
   my_index = AESDEV_CMD_INDEXOF (d_begin_ptr, d_write_ptr);
 
   /* Czekam na miejsce w kolejce poleceń.  */
-  while (!list_empty(&aes_dev->task_list_head) &&
+  while (!list_empty (&aes_dev->task_list_head) &&
          my_index == AESDEV_CMD_INDEXOF (d_begin_ptr, list_first_entry (&aes_dev->task_list_head, aes128_task, task_list)->d_write_ptr))
     {
       /* Brak miejsc na dalsze komendy, czekamy.  */
@@ -346,58 +346,52 @@ cbuf_take (void *vdest, struct circ_buf *buf, int len)
 
 /*** Simple list *************************************************************/
 static int
-available_read_data (aes128_context *context)
+move_completed_tasks (aes128_context *context)
 {
   aes128_task *task, *temp_task;
-  aes128_dev *aes_dev;
   unsigned long flags;
-  struct list_head ready_tasks;
 
   KDEBUG ("%s: entering\n", __func__);
 
-  INIT_LIST_HEAD (&ready_tasks);
-  aes_dev = context->aes_dev;
-
   /*** CRITICAL SECTION ****/
-  AESDEV_STOP (context->aes_dev);
   spin_lock_irqsave (&context->aes_dev->lock, flags);
 
-  list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
+  /* Move my tasks to my list.  */
+  list_for_each_entry_safe (task, temp_task, &context->aes_dev->completed_list_head, task_list)
   {
-    /* TODO sprawdz to 10 razy.  */
-    int task_index;
-    task_index = AESDEV_CMD_INDEXOF(aes_dev->d_cmd_buff_ptr, task->d_write_ptr);
-    if ((1 << task_index) & aes_dev->intr_to_handle)
+    if (task->context == context)
       {
         list_del (&task->task_list);
-        list_add (&task->task_list, &ready_tasks);
+        list_add_tail (&task->task_list, &context->completed_list_head);
       }
-    aes_dev->intr_to_handle &= ~(1 << task_index);
   }
 
   spin_unlock_irqrestore (&context->aes_dev->lock, flags);
-  AESDEV_START (context->aes_dev);
   /*** END CRITICAL SECTION ****/
 
-  KDEBUG ("%s: copying tasks to context...\n", __func__);
-
-  list_for_each_entry_safe (task, temp_task, &ready_tasks, task_list)
+  /* Copy from tasks to buffer - as long as space is available.  */
+  list_for_each_entry_safe (task, temp_task, &context->completed_list_head, task_list)
   {
-    aes128_context *context;
-//    KDEBUG ("%s: taking task tread=%p twrite=%p cread=%p cwrite=%p rread=%p rwrite=%p\n",
-//            __func__, task->d_read_ptr, task->d_write_ptr, context->aes_dev->d_cmd_read_ptr, context->aes_dev->d_cmd_write_ptr,
-//            ioread32 (context->aes_dev->bar0 + AESDEV_CMD_READ_PTR), ioread32 (context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR));
-    {
-      int i;
-      KDEBUG ("%s: data=", __func__);
-      for (i = 0; i < 16; ++i) KDEBUG ("%02x", task->k_output_data_ptr->state[i]);
-      KDEBUG ("\n");
-    }
-    context = task->context;
-    cbuf_add_from_kernel (&context->read_buffer, (void *) task->k_output_data_ptr, task->block_count * sizeof (aes128_block));
-    task_destroy (task);
-    wake_up (&context->read_queue);
+    if (cbuf_free (&context->read_buffer) >= task->block_count * sizeof (aes128_block))
+      {
+        cbuf_add_from_kernel (&context->read_buffer, (char *) task->k_output_data_ptr, task->block_count * sizeof (aes128_block));
+        task_destroy (task);
+      }
+    else
+      break;
   }
+
+  return 0;
+}
+
+static int
+available_read_data (aes128_context *context)
+{
+  KDEBUG ("%s: entering\n", __func__);
+
+  /* If no data is available, try to download some from the device.  */
+  if (cbuf_cont (&context->read_buffer) == 0)
+    move_completed_tasks (context);
 
   KDEBUG ("%s: leaving\n", __func__);
   return cbuf_cont (&context->read_buffer);
@@ -419,6 +413,7 @@ context_init (aes128_context *context, aes128_dev *aes_dev)
   init_waitqueue_head (&context->write_queue);
   mutex_init (&context->lock);
   INIT_LIST_HEAD (&context->context_list);
+  INIT_LIST_HEAD (&context->completed_list_head);
   list_add (&context->context_list, &aes_dev->context_list_head);
   KDEBUG ("%s: leaving\n", __func__);
 }
@@ -444,11 +439,11 @@ static irqreturn_t
 irq_handler (int irq, void *ptr)
 {
   aes128_dev *aes_dev;
-  aes128_context *context;
+  aes128_task *task, *temp_task;
   uint8_t intr;
   unsigned long irq_flags;
 
-  KDEBUG ("%s: entering\n", __func__);
+  /* TODO */
   aes_dev = ptr;
 
   /*** CRITICAL SECTION ***/
@@ -459,28 +454,35 @@ irq_handler (int irq, void *ptr)
     {
       spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
       AESDEV_START (aes_dev);
-      KDEBUG ("%s: not my interrupt, IRQ_NONE!\n", __FUNCTION__);
       return IRQ_NONE;
     }
 
-  /* My interrupt - at least one command completed.  */
+  /* Move completed tasks to another list.  */
+  list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
+  {
+    int task_index;
+
+    task_index = AESDEV_CMD_INDEXOF (aes_dev->d_cmd_buff_ptr, task->d_write_ptr);
+    if ((1 << task_index) & intr)
+      {
+        list_del (&task->task_list);
+        list_add_tail (&task->task_list, &aes_dev->completed_list_head);
+        /* Notify about new data.  */
+        wake_up (&task->context->read_queue);
+      }
+  }
+
+  /* My interrupt => at least one command completed.  */
   aes_dev->command_space = 1;
   wake_up (&aes_dev->command_queue);
 
-  list_for_each_entry (context, &aes_dev->context_list_head, context_list)
-  {
-    wake_up (&context->read_queue);
-  }
-
   /* Reset all interrupts */
-  aes_dev->intr_to_handle |= intr;
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   AESDEV_START (aes_dev);
   /*** END CRITICAL SECTION ***/
 
-  KDEBUG ("%s: leaving\n", __func__);
   return IRQ_HANDLED;
 }
 /*****************************************************************************/
@@ -631,12 +633,12 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
       goto exit;
     }
 
-  if (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AES_ECB_ENCRYPT;
+  if /**/ (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AES_ECB_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT) context->mode = AES_ECB_DECRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CBC_ENCRYPT) context->mode = AES_CBC_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_CBC_DECRYPT) context->mode = AES_CBC_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CFB_ENCRYPT) context->mode = AES_CBC_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CFB_DECRYPT) context->mode = AES_CBC_DECRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CFB_ENCRYPT) context->mode = AES_CFB_ENCRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CFB_DECRYPT) context->mode = AES_CFB_DECRYPT;
   else if (cmd == AESDEV_IOCTL_SET_OFB) context->mode = AES_OFB;
   else if (cmd == AESDEV_IOCTL_SET_CTR) context->mode = AES_CTR;
   else if (cmd == AESDEV_IOCTL_GET_STATE)
@@ -746,9 +748,9 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   aes_dev->bar0 = pci_iomap (pci_dev, 0, 0);
   aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, dev_count), NULL, "aesdev%d", dev_count);
   aes_dev->pci_dev = pci_dev;
-  aes_dev->intr_to_handle = 0x00;
   INIT_LIST_HEAD (&aes_dev->context_list_head);
   INIT_LIST_HEAD (&aes_dev->task_list_head);
+  INIT_LIST_HEAD (&aes_dev->completed_list_head);
   init_waitqueue_head (&aes_dev->command_queue);
   pci_set_drvdata (pci_dev, aes_dev);
 
