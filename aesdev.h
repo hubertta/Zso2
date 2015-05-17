@@ -44,17 +44,15 @@ struct aes128_dev
   
   aes128_command *k_cmd_buff_ptr;
   aes_dma_addr_t d_cmd_buff_ptr;
-  aes_dma_addr_t d_cmd_read_ptr;    /* NEVER go beyond that! */
-  aes_dma_addr_t d_cmd_write_ptr;
-  aes_dma_addr_t d_cmd_end_ptr;
   
   spinlock_t lock;
   wait_queue_head_t command_queue;
   
+  int intr_to_handle;
   size_t command_space;
-  int intr;
   
   struct list_head context_list_head;
+  struct list_head task_list_head;
 };
 
 struct aes128_context
@@ -76,7 +74,6 @@ struct aes128_context
   int cmds_in_progress;             /* How many commends are in device queue? */
   
   struct list_head context_list;
-  struct list_head task_list_head;
 };
 
 /* Complete set of information for one command */

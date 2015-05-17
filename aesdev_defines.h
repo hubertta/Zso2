@@ -51,10 +51,12 @@
 #define AESDEV_BLOCK_CMD 0x50
 
 #define AESDRV_IOBUFF_SIZE 0x1000
-#define AESDRV_CMDBUFF_SIZE 0x1000
+#define AESDRV_CMDBUFF_SIZE (0x08 * sizeof (aes128_command))
 
 #define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
 #define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
+
+#define AESDEV_CMD_INDEXOF(begin, write) (((write) - (begin)) / 16)
 
 #define SET_FLAG(reg, flag)\
   do\

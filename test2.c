@@ -112,29 +112,29 @@ test_ecb ()
       fprintf (stderr, "\n");
     }
 
-//  set_mode (AESDEV_IOCTL_SET_ECB_DECRYPT);
-//
-//  write_block (test_enc_block);
-//  read_block (test_result2);
-//  ok = 1;
-//  for (i = 0; i < 16; ++i)
-//    if (test_result2[i] != test_block[i])
-//      ok = 0;
+  set_mode (AESDEV_IOCTL_SET_ECB_DECRYPT);
 
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
-  //  fprintf (stderr, "\n");
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
-  //  fprintf (stderr, "\n");
-  //  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_enc_block[i] & 0xFF);
-  //  fprintf (stderr, "\n");
-//  fprintf (stderr, "ECB decrypt %s\n", (ok ? "ok" : "err"));
-//  if (!ok)
-//    {
-//      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
-//      fprintf (stderr, "\n");
-//      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_block[i] & 0xFF);
-//      fprintf (stderr, "\n");
-//    }
+  write_block (test_enc_block);
+  read_block (test_result2);
+  ok = 1;
+  for (i = 0; i < 16; ++i)
+    if (test_result2[i] != test_block[i])
+      ok = 0;
+
+//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
+//  fprintf (stderr, "\n");
+//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result[i] & 0xFF);
+//  fprintf (stderr, "\n");
+//  for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_enc_block[i] & 0xFF);
+//  fprintf (stderr, "\n");
+  fprintf (stderr, "ECB decrypt %s\n", (ok ? "ok" : "err"));
+  if (!ok)
+    {
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_result2[i] & 0xFF);
+      fprintf (stderr, "\n");
+      for (i = 0; i < 16; ++i) fprintf (stderr, "%02x", test_block[i] & 0xFF);
+      fprintf (stderr, "\n");
+    }
 }
 
 void
@@ -314,13 +314,13 @@ main ()
 
   open_file ();
 
-  for (i = 0; i < 0x1; ++i)
+  for (i = 0; i < 0x100; ++i)
     {
       test_ecb ();
-//      test_cbc ();
-//      test_cfb ();
-//      test_ofb ();
-//      test_ctr ();
+      test_cbc ();
+      test_cfb ();
+      test_ofb ();
+      test_ctr ();
     }
 
   close (fd);

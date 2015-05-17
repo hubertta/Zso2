@@ -58,6 +58,7 @@ task_enqueue (aes128_task *task)
   aes128_context *context;
   aes128_dev *aes_dev;
   aes_dma_addr_t d_begin_ptr, d_write_ptr, d_read_ptr, d_end_ptr;
+  int my_index;
   unsigned long irq_flags;
   KDEBUG ("%s: entering\n", __func__);
 
@@ -68,11 +69,16 @@ task_enqueue (aes128_task *task)
   /*** CRITICAL SECTION ****/
   AESDEV_STOP (context->aes_dev);
   spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
-  list_add (&task->task_list, &context->task_list_head);
+
+  d_begin_ptr = ioread32 (bar0 + AESDEV_CMD_BEGIN_PTR);
+  d_end_ptr = ioread32 (bar0 + AESDEV_CMD_END_PTR);
+  d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
+  d_read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
+  my_index = AESDEV_CMD_INDEXOF (d_begin_ptr, d_write_ptr);
 
   /* Czekam na miejsce w kolejce poleceń.  */
-  while (aes_dev->d_cmd_write_ptr + 16 == aes_dev->d_cmd_read_ptr ||
-         (aes_dev->d_cmd_write_ptr + 16 == aes_dev->d_cmd_end_ptr && aes_dev->d_cmd_read_ptr == aes_dev->d_cmd_buff_ptr))
+  while (!list_empty(&aes_dev->task_list_head) &&
+         my_index == AESDEV_CMD_INDEXOF (d_begin_ptr, list_first_entry (&aes_dev->task_list_head, aes128_task, task_list)->d_write_ptr))
     {
       /* Brak miejsc na dalsze komendy, czekamy.  */
       context->aes_dev->command_space = 0;
@@ -83,19 +89,20 @@ task_enqueue (aes128_task *task)
 
       AESDEV_STOP (context->aes_dev);
       spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+
+      d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
+      my_index = AESDEV_CMD_INDEXOF (d_begin_ptr, d_write_ptr);
     }
+  list_add_tail (&task->task_list, &aes_dev->task_list_head);
 
   d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
-  d_read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
-  d_begin_ptr = aes_dev->d_cmd_buff_ptr;
-  d_end_ptr = aes_dev->d_cmd_end_ptr;
   /* Write new command to device */
   cmd = (void *) (((char *) task->context->aes_dev->k_cmd_buff_ptr) + (d_write_ptr - d_begin_ptr));
   //  KDEBUG ("%s: current write ptr = %p\n", __func__, cmd);
   cmd->in_ptr = task->d_input_data_ptr;
   cmd->out_ptr = task->d_output_data_ptr;
   cmd->ks_ptr = task->d_ks_ptr;
-  cmd->xfer_val = AESDEV_TASK (task->block_count, 1 + (((long) d_write_ptr / 16) % 2), 0x01, task->mode);
+  cmd->xfer_val = AESDEV_TASK (task->block_count, 1 << my_index, 0x01, task->mode);
 
   /* Save command pointers for later check if command was completed.  */
   task->d_write_ptr = d_write_ptr;
@@ -106,9 +113,6 @@ task_enqueue (aes128_task *task)
   if (d_write_ptr == d_end_ptr)
     d_write_ptr = d_begin_ptr;
   iowrite32 (d_write_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
-
-  aes_dev->d_cmd_write_ptr = d_write_ptr;
-  aes_dev->d_cmd_read_ptr = d_read_ptr;
 
   spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
   AESDEV_START (context->aes_dev);
@@ -345,32 +349,30 @@ static int
 available_read_data (aes128_context *context)
 {
   aes128_task *task, *temp_task;
+  aes128_dev *aes_dev;
   unsigned long flags;
   struct list_head ready_tasks;
 
   KDEBUG ("%s: entering\n", __func__);
 
   INIT_LIST_HEAD (&ready_tasks);
+  aes_dev = context->aes_dev;
 
   /*** CRITICAL SECTION ****/
   AESDEV_STOP (context->aes_dev);
   spin_lock_irqsave (&context->aes_dev->lock, flags);
 
-  if (1 + (((long) context->aes_dev->d_cmd_read_ptr / 16) % 2) == context->aes_dev->intr)
-    {
-      context->aes_dev->d_cmd_read_ptr -= 16;
-    }
-
-  list_for_each_entry_safe (task, temp_task, &context->task_list_head, task_list)
+  list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
     /* TODO sprawdz to 10 razy.  */
-    if ((task->d_read_ptr <= task->d_write_ptr && context->aes_dev->d_cmd_read_ptr > task->d_write_ptr) ||
-        (task->d_read_ptr <= task->d_write_ptr && context->aes_dev->d_cmd_read_ptr < task->d_read_ptr) ||
-        (task->d_read_ptr > task->d_write_ptr && context->aes_dev->d_cmd_read_ptr > task->d_write_ptr && context->aes_dev->d_cmd_read_ptr < task->d_read_ptr))
+    int task_index;
+    task_index = AESDEV_CMD_INDEXOF(aes_dev->d_cmd_buff_ptr, task->d_write_ptr);
+    if ((1 << task_index) & aes_dev->intr_to_handle)
       {
         list_del (&task->task_list);
         list_add (&task->task_list, &ready_tasks);
       }
+    aes_dev->intr_to_handle &= ~(1 << task_index);
   }
 
   spin_unlock_irqrestore (&context->aes_dev->lock, flags);
@@ -381,17 +383,20 @@ available_read_data (aes128_context *context)
 
   list_for_each_entry_safe (task, temp_task, &ready_tasks, task_list)
   {
-    KDEBUG ("%s: taking task tread=%p twrite=%p cread=%p cwrite=%p rread=%p rwrite=%p\n",
-            __func__, task->d_read_ptr, task->d_write_ptr, context->aes_dev->d_cmd_read_ptr, context->aes_dev->d_cmd_write_ptr,
-            ioread32 (context->aes_dev->bar0 + AESDEV_CMD_READ_PTR), ioread32 (context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR));
+    aes128_context *context;
+//    KDEBUG ("%s: taking task tread=%p twrite=%p cread=%p cwrite=%p rread=%p rwrite=%p\n",
+//            __func__, task->d_read_ptr, task->d_write_ptr, context->aes_dev->d_cmd_read_ptr, context->aes_dev->d_cmd_write_ptr,
+//            ioread32 (context->aes_dev->bar0 + AESDEV_CMD_READ_PTR), ioread32 (context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR));
     {
       int i;
       KDEBUG ("%s: data=", __func__);
       for (i = 0; i < 16; ++i) KDEBUG ("%02x", task->k_output_data_ptr->state[i]);
       KDEBUG ("\n");
     }
+    context = task->context;
     cbuf_add_from_kernel (&context->read_buffer, (void *) task->k_output_data_ptr, task->block_count * sizeof (aes128_block));
     task_destroy (task);
+    wake_up (&context->read_queue);
   }
 
   KDEBUG ("%s: leaving\n", __func__);
@@ -414,7 +419,6 @@ context_init (aes128_context *context, aes128_dev *aes_dev)
   init_waitqueue_head (&context->write_queue);
   mutex_init (&context->lock);
   INIT_LIST_HEAD (&context->context_list);
-  INIT_LIST_HEAD (&context->task_list_head);
   list_add (&context->context_list, &aes_dev->context_list_head);
   KDEBUG ("%s: leaving\n", __func__);
 }
@@ -468,12 +472,8 @@ irq_handler (int irq, void *ptr)
     wake_up (&context->read_queue);
   }
 
-  /* Save new ptrs */
-  aes_dev->d_cmd_read_ptr = ioread32 (aes_dev->bar0 + AESDEV_CMD_READ_PTR);
-  aes_dev->d_cmd_write_ptr = ioread32 (aes_dev->bar0 + AESDEV_CMD_WRITE_PTR);
-
   /* Reset all interrupts */
-  aes_dev->intr = intr;
+  aes_dev->intr_to_handle |= intr;
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
@@ -695,15 +695,12 @@ init_cmd_buffer (aes128_dev *aes_dev)
           dma_alloc_coherent (&aes_dev->pci_dev->dev, AESDRV_CMDBUFF_SIZE,
                               &tmp_dma_addr, GFP_KERNEL);
   aes_dev->d_cmd_buff_ptr = tmp_dma_addr;
-  aes_dev->d_cmd_end_ptr = aes_dev->d_cmd_buff_ptr + AESDRV_CMDBUFF_SIZE;
-  aes_dev->d_cmd_read_ptr = aes_dev->d_cmd_buff_ptr;
-  aes_dev->d_cmd_write_ptr = aes_dev->d_cmd_buff_ptr;
 
   iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_BEGIN_PTR);
   /* TODO: Ostatni czy zaostatni? */
-  iowrite32 ((uint32_t) aes_dev->d_cmd_end_ptr, bar0 + AESDEV_CMD_END_PTR);
-  iowrite32 ((uint32_t) aes_dev->d_cmd_read_ptr, bar0 + AESDEV_CMD_READ_PTR);
-  iowrite32 ((uint32_t) aes_dev->d_cmd_write_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
+  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr + AESDRV_CMDBUFF_SIZE, bar0 + AESDEV_CMD_END_PTR);
+  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_READ_PTR);
+  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
 
   KDEBUG ("%s: write ptr set to %p\n", __func__, &aes_dev->d_cmd_buff_ptr);
   KDEBUG ("%s: leaving\n", __func__);
@@ -749,7 +746,9 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   aes_dev->bar0 = pci_iomap (pci_dev, 0, 0);
   aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, dev_count), NULL, "aesdev%d", dev_count);
   aes_dev->pci_dev = pci_dev;
+  aes_dev->intr_to_handle = 0x00;
   INIT_LIST_HEAD (&aes_dev->context_list_head);
+  INIT_LIST_HEAD (&aes_dev->task_list_head);
   init_waitqueue_head (&aes_dev->command_queue);
   pci_set_drvdata (pci_dev, aes_dev);
 
