@@ -58,21 +58,6 @@
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((write) - (begin)) / 16)
 
-#define SET_FLAG(reg, flag)\
-  do\
-  {\
-    unsigned int _current;\
-    _current = ioread32(reg);\
-    iowrite32(_current & ~(flag), reg);\
-  } while (0)
-#define RESET_FLAG(reg, flag)\
-  do\
-  {\
-    unsigned int _current;\
-    _current = ioread32(reg);\
-    iowrite32(_current | (flag), reg);\
-  } while (0)
-
 #define KDEBUG(...) printk(KERN_WARNING __VA_ARGS__)
 //#define KDEBUG(...)
 
@@ -90,22 +75,3 @@ typedef enum
 } AES_MODE;
 
 #define HAS_STATE(mode) ((mode) != AES_ECB_ENCRYPT && mode != AES_ECB_DECRYPT)
-
-#define READ_4REG(r, bar)\
-    do\
-    {\
-        r[0] = ioread32(bar);\
-        r[1] = ioread32(bar + 0x04);\
-        r[2] = ioread32(bar + 0x08);\
-        r[3] = ioread32(bar + 0x0c);\
-    } while (0)
-
-#define WRITE_4REG(r, bar)\
-    do\
-    {\
-        iowrite32(r[0], bar);\
-        iowrite32(r[1], bar + 0x04);\
-        iowrite32(r[2], bar + 0x08);\
-        iowrite32(r[3], bar + 0x0c);\
-    } while (0)
-

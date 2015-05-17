@@ -48,7 +48,7 @@ struct aes128_dev
   spinlock_t lock;
   wait_queue_head_t command_queue;
   
-  size_t command_space;
+  size_t tasks_in_progress;
   
   struct list_head context_list_head;
   struct list_head task_list_head;
@@ -59,8 +59,6 @@ struct aes128_context
 {
   AES_MODE mode;
   
-  aes128_block key;
-  aes128_block state;
   aes128_dev *aes_dev;
   
   struct circ_buf write_buffer;
@@ -75,6 +73,9 @@ struct aes128_context
   
   struct list_head context_list;
   struct list_head completed_list_head;
+  
+  aes_dma_addr_t d_ks_ptr;
+  aes128_block *k_ks_ptr;
 };
 
 /* Complete set of information for one command */
@@ -82,10 +83,8 @@ struct aes128_task
 {
   uint32_t d_input_data_ptr;
   aes_dma_addr_t d_output_data_ptr;
-  aes_dma_addr_t d_ks_ptr;
   aes128_block *k_input_data_ptr;
   aes128_block *k_output_data_ptr;
-  aes128_block *k_ks_ptr;
   size_t block_count;
   aes128_context *context;
   aes_dma_addr_t d_read_ptr;
