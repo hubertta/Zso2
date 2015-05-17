@@ -52,6 +52,7 @@ struct aes128_dev
   wait_queue_head_t command_queue;
   
   size_t command_space;
+  int intr;
   
   struct list_head context_list_head;
 };

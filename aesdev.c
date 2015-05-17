@@ -68,6 +68,7 @@ task_enqueue (aes128_task *task)
   /*** CRITICAL SECTION ****/
   AESDEV_STOP (context->aes_dev);
   spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+  list_add (&task->task_list, &context->task_list_head);
 
   /* Czekam na miejsce w kolejce poleceń.  */
   while (aes_dev->d_cmd_write_ptr + 16 == aes_dev->d_cmd_read_ptr ||
@@ -94,7 +95,7 @@ task_enqueue (aes128_task *task)
   cmd->in_ptr = task->d_input_data_ptr;
   cmd->out_ptr = task->d_output_data_ptr;
   cmd->ks_ptr = task->d_ks_ptr;
-  cmd->xfer_val = AESDEV_TASK (task->block_count, 0xFF, 0x01, task->mode);
+  cmd->xfer_val = AESDEV_TASK (task->block_count, 1 + (((long) d_write_ptr / 16) % 2), 0x01, task->mode);
 
   /* Save command pointers for later check if command was completed.  */
   task->d_write_ptr = d_write_ptr;
@@ -196,7 +197,6 @@ task_create (aes128_context *context)
 
       /* Register task with context.  */
       INIT_LIST_HEAD (&aes_task->task_list);
-      list_add (&aes_task->task_list, &context->task_list_head);
 
       KDEBUG ("%s: enqueing task\n", __func__);
       task_enqueue (aes_task);
@@ -356,6 +356,11 @@ available_read_data (aes128_context *context)
   AESDEV_STOP (context->aes_dev);
   spin_lock_irqsave (&context->aes_dev->lock, flags);
 
+  if (1 + (((long) context->aes_dev->d_cmd_read_ptr / 16) % 2) == context->aes_dev->intr)
+    {
+      context->aes_dev->d_cmd_read_ptr -= 16;
+    }
+
   list_for_each_entry_safe (task, temp_task, &context->task_list_head, task_list)
   {
     /* TODO sprawdz to 10 razy.  */
@@ -378,7 +383,7 @@ available_read_data (aes128_context *context)
   {
     KDEBUG ("%s: taking task tread=%p twrite=%p cread=%p cwrite=%p rread=%p rwrite=%p\n",
             __func__, task->d_read_ptr, task->d_write_ptr, context->aes_dev->d_cmd_read_ptr, context->aes_dev->d_cmd_write_ptr,
-            ioread32(context->aes_dev->bar0 + AESDEV_CMD_READ_PTR), ioread32(context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR));
+            ioread32 (context->aes_dev->bar0 + AESDEV_CMD_READ_PTR), ioread32 (context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR));
     {
       int i;
       KDEBUG ("%s: data=", __func__);
@@ -468,6 +473,7 @@ irq_handler (int irq, void *ptr)
   aes_dev->d_cmd_write_ptr = ioread32 (aes_dev->bar0 + AESDEV_CMD_WRITE_PTR);
 
   /* Reset all interrupts */
+  aes_dev->intr = intr;
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
