@@ -15,14 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <pthread.h>
 #include "aesdev_ioctl.h"
 
 int fd;
-const char *test_block = "1111111122222222"; // 31 31 31 31 31 31 31 31 32 32 32 32 32 32 32 32
-const char *test_key = "2222222244444444"; // 32 32 32 32 32 32 32 32 34 34 34 34 34 34 34 34
-const char *test_iv = "3333333355555555"; // 
-const char *test_key_iv = "22222222444444443333333355555555"; // 32 32 32 32 32 32 32 32 34 34 34 34 34 34 34 34
-const char *test_enc_block = "\x7d\xe9\x85\x6a\xa1\xc4\x33\xcc\x87\x70\x5e\xab\x7d\x83\x88\xab";
+//const char *test_block = "1111111122222222"; // 31 31 31 31 31 31 31 31 32 32 32 32 32 32 32 32
+//const char *test_key = "2222222244444444"; // 32 32 32 32 32 32 32 32 34 34 34 34 34 34 34 34
+//const char *test_iv = "3333333355555555"; // 
+//const char *test_key_iv = "22222222444444443333333355555555"; // 32 32 32 32 32 32 32 32 34 34 34 34 34 34 34 34
+//const char *test_enc_block = "\x7d\xe9\x85\x6a\xa1\xc4\x33\xcc\x87\x70\x5e\xab\x7d\x83\x88\xab";
 // 7de9856aa1c433cc87705eab7d8388ab
 
 void
@@ -128,9 +129,11 @@ assert_equal (const char *d1, const char *d2, size_t len)
     }
 }
 
+#define assert_equal(a, b, c)
+
 /*** TESTS *******************************************************************/
-void
-test_ecb ()
+void *
+test_ecb (void * x)
 {
   const char *text1 = "\x6b\xc1\xbe\xe2\x2e\x40\x9f\x96\xe9\x3d\x7e\x11\x73\x93\x17\x2a";
   const char *cipher1 = "\x3a\xd7\x7b\xb4\x0d\x7a\x36\x60\xa8\x9e\xca\xf3\x24\x66\xef\x97";
@@ -219,10 +222,12 @@ test_ecb ()
     }
   assert_equal (all_result, all_cipher, 64);
   fprintf (stderr, "ECB encrypt (5): %s\n", ok ? "ok" : "err");
+
+  return NULL;
 }
 
-void
-test_cbc ()
+void *
+test_cbc (void * x)
 {
   const char *iv1 = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
   const char *text1 = "\x6b\xc1\xbe\xe2\x2e\x40\x9f\x96\xe9\x3d\x7e\x11\x73\x93\x17\x2a";
@@ -280,14 +285,21 @@ test_cbc ()
   fprintf (stderr, "CBC encrypt (1): %s\n", ok ? "ok" : "err");
 
   /*** Test 2 ***/
+  //  fprintf (stderr, "%u: do_write1\n", pthread_self ());
   do_write (fd, text3, 16);
+  //  fprintf (stderr, "%u: do_write2\n", pthread_self ());
   do_write (fd, text2, 16);
+  //  fprintf (stderr, "%u: do_write3\n", pthread_self ());
   do_write (fd, text1, 16);
+  //  fprintf (stderr, "%u: do_read1\n", pthread_self ());
   do_read (fd, all_result + 16, 48);
   memcpy (key_iv + 16, iv4, 16);
   set_mode (AESDEV_IOCTL_SET_CBC_DECRYPT, key_iv);
+  //  fprintf (stderr, "%u: do_write5\n", pthread_self ());
   do_write (fd, all_result, 64);
+  //  fprintf (stderr, "%u: do_read2\n", pthread_self ());
   do_read (fd, all_result, 64);
+  //  fprintf (stderr, "%u: ok\n", pthread_self ());
   ok = 1;
   if (!is_equal (all_result, text4, 16)) ok = 0;
   if (!is_equal (all_result + 16, text3, 16)) ok = 0;
@@ -299,10 +311,12 @@ test_cbc ()
   assert_equal (all_result + 48, text1, 16);
 
   fprintf (stderr, "CBC enc/dec (2): %s\n", ok ? "ok" : "err");
+
+  return NULL;
 }
 
-void
-test_cfb ()
+void *
+test_cfb (void * x)
 {
   const char *iv1 = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
   const char *text1 = "\x6b\xc1\xbe\xe2\x2e\x40\x9f\x96\xe9\x3d\x7e\x11\x73\x93\x17\x2a";
@@ -379,10 +393,12 @@ test_cfb ()
   assert_equal (all_result + 48, text1, 16);
 
   fprintf (stderr, "CFB enc/dec (2): %s\n", ok ? "ok" : "err");
+
+  return NULL;
 }
 
-void
-test_ofb ()
+void *
+test_ofb (void * x)
 {
   const char *iv1 = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
   const char *text1 = "\x6b\xc1\xbe\xe2\x2e\x40\x9f\x96\xe9\x3d\x7e\x11\x73\x93\x17\x2a";
@@ -459,10 +475,12 @@ test_ofb ()
   assert_equal (all_result + 48, text1, 16);
 
   fprintf (stderr, "OFB enc/dec (2): %s\n", ok ? "ok" : "err");
+
+  return NULL;
 }
 
-void
-test_ctr ()
+void *
+test_ctr (void * x)
 {
   const char *iv = "\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff";
   const char *text1 = "\x6b\xc1\xbe\xe2\x2e\x40\x9f\x96\xe9\x3d\x7e\x11\x73\x93\x17\x2a";
@@ -510,7 +528,7 @@ test_ctr ()
   do_read (fd, all_result, 16);
   if (!is_equal (all_result, cipher3, 16)) ok = 0;
   assert_equal (all_result, cipher3, 16);
-  
+
   set_mode (AESDEV_IOCTL_GET_STATE, key_iv + 16);
 
   do_write (fd, text4, 16);
@@ -539,20 +557,33 @@ test_ctr ()
   assert_equal (all_result + 48, text1, 16);
 
   fprintf (stderr, "CTR enc/dec (2): %s\n", ok ? "ok" : "err");
+
+  return NULL;
 }
 
 /*****************************************************************************/
+
+#define NUM_TH 0x1000
+
+pthread_t threads[NUM_TH];
+pthread_attr_t attr;
+int i;
+
+void* (*funs[])(void*) = {/* dont do ecb for now */ test_cbc, test_cbc, test_cfb, test_ofb, test_ctr};
 
 int
 main ()
 {
   open_file ();
 
-  test_ecb ();
-  test_cbc ();
-  test_cfb ();
-  test_ofb ();
-  test_ctr ();
+  pthread_attr_init (&attr);
+
+  for (i = 0; i < NUM_TH; ++i)
+    {
+      pthread_create (&threads[i], &attr, funs[i % 5], NULL);
+    }
+  for (i = 0; i < NUM_TH; ++i)
+    pthread_join (threads[i], NULL);
 
   close (fd);
 

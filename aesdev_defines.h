@@ -58,8 +58,16 @@
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((write) - (begin)) / 16)
 
-#define KDEBUG(...) printk(KERN_WARNING __VA_ARGS__)
+#define KDEBUG(msg, ...) do\
+    {\
+        printk(KERN_WARNING "%s: " msg, __func__, ##__VA_ARGS__);\
+    } while (0)
 //#define KDEBUG(...)
+
+#define DNOTIF_ENTER_FUN KDEBUG ("entering\n")
+#define DNOTIF_LEAVE_FUN KDEBUG ("leaving\n")
+
+#define ADD_OFFSET(ptr, offset) (void *) (((char *) (ptr)) + (size_t) (offset))
 
 typedef enum
 {

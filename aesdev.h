@@ -10,6 +10,7 @@
 #include <linux/circ_buf.h>
 #include <linux/wait.h>
 
+struct aes128_circ_buff;
 struct aes128_block;
 struct aes128_key;
 struct aes128_dev;
@@ -17,6 +18,7 @@ struct aes128_context;
 struct aes128_task;
 struct aes128_command;
 
+typedef struct aes128_circ_buff aes128_circ_buff;
 typedef struct aes128_block aes128_block;
 typedef struct aes128_key aes128_key;
 typedef struct aes128_dev aes128_dev;
@@ -26,14 +28,16 @@ typedef struct aes128_command aes128_command;
 
 typedef uint32_t aes_dma_addr_t;
 
+struct aes128_circ_buff
+{
+  size_t head;
+  size_t tail;
+  char *data;
+};
+
 struct aes128_block
 {
   uint8_t state[AESDEV_AES_BLOCK_SIZE];
-};
-
-struct aes128_key
-{
-  uint8_t key[AESDEV_AES_KEY_SIZE];
 };
 
 struct aes128_dev
@@ -41,15 +45,15 @@ struct aes128_dev
   void __iomem *bar0;
   struct device *sys_dev;
   struct pci_dev *pci_dev;
-  
+
   aes128_command *k_cmd_buff_ptr;
   aes_dma_addr_t d_cmd_buff_ptr;
-  
+
   spinlock_t lock;
   wait_queue_head_t command_queue;
-  
+
   size_t tasks_in_progress;
-  
+
   struct list_head context_list_head;
   struct list_head task_list_head;
   struct list_head completed_list_head;
@@ -58,22 +62,22 @@ struct aes128_dev
 struct aes128_context
 {
   AES_MODE mode;
-  
+
   aes128_dev *aes_dev;
-  
+
   struct circ_buf write_buffer;
   struct circ_buf read_buffer;
-  
+
   wait_queue_head_t read_queue;
   wait_queue_head_t write_queue;
   struct mutex lock;
-  
-  char file_open;                   /* Is the file still open? */
-  int cmds_in_progress;             /* How many commends are in device queue? */
-  
+
+  char file_open;       /* Is the file still open? */
+  int cmds_in_progress; /* How many commands are in device queue? */
+
   struct list_head context_list;
   struct list_head completed_list_head;
-  
+
   aes_dma_addr_t d_ks_ptr;
   aes128_block *k_ks_ptr;
 };
@@ -87,8 +91,7 @@ struct aes128_task
   aes128_block *k_output_data_ptr;
   size_t block_count;
   aes128_context *context;
-  aes_dma_addr_t d_read_ptr;
-  aes_dma_addr_t d_write_ptr;
+  int cmd_index;
   AES_MODE mode;
   struct list_head task_list;
 };
@@ -121,10 +124,10 @@ static int pci_resume (struct pci_dev *dev);
 static void pci_shutdown (struct pci_dev *dev);
 
 /* Cyclic buffers */
-static int cbuf_cont (const struct circ_buf *buf);
-static int cbuf_free (const struct circ_buf *buf);
-static int cbuf_take (void *dest, struct circ_buf *buf, int len);
-static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, int len);
-static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, int len);
+static size_t cbuf_cont (const struct circ_buf *buf);
+static size_t cbuf_free (const struct circ_buf *buf);
+static int cbuf_take (void *dest, struct circ_buf *buf, size_t len);
+static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, size_t len);
+static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, size_t len);
 
 #endif /* _AESDEV_H */
