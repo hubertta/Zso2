@@ -29,7 +29,7 @@ int fd;
 void
 do_write (int fd, const char *data, size_t len)
 {
-  size_t written, ret;
+  ssize_t written, ret;
 
   written = 0;
 
@@ -53,7 +53,7 @@ do_write (int fd, const char *data, size_t len)
 void
 do_read (int fd, char *data, size_t len)
 {
-  size_t readed, ret;
+  ssize_t readed, ret;
 
   readed = 0;
 
@@ -89,7 +89,7 @@ set_mode (int mode, const char *key_iv)
 void
 open_file ()
 {
-  fd = open ("/dev/aesdev0", O_RDWR);
+  fd = open ("/dev/aes0", O_RDWR);
   if (fd == -1)
     {
       perror ("open");

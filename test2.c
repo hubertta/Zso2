@@ -71,7 +71,7 @@ read_block (char *block)
 void
 open_file ()
 {
-  fd = open ("/dev/aesdev0", O_RDWR);
+  fd = open ("/dev/aes0", O_RDWR);
   if (fd == -1)
     {
       perror ("open");

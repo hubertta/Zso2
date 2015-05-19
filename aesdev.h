@@ -10,29 +10,30 @@
 #include <linux/circ_buf.h>
 #include <linux/wait.h>
 
-struct aes128_circ_buff;
-struct aes128_block;
-struct aes128_key;
-struct aes128_dev;
-struct aes128_context;
+struct aes128_combo_buffer;     /* Buffer for read/write/encrypted data.  */
+struct aes128_block;            /* 16 bytes of data, used for both state,
+                                   data and keys.  */
+struct aes128_dev;              /* Represents single aes device.  */
+struct aes128_context;          /* Corresponds to single struct file.  */
+struct aes128_command;          /* Represents one slot in dev's cmd buffer.  */
 struct aes128_task;
-struct aes128_command;
 
-typedef struct aes128_circ_buff aes128_circ_buff;
+typedef struct aes128_combo_buffer aes128_combo_buffer;
 typedef struct aes128_block aes128_block;
-typedef struct aes128_key aes128_key;
 typedef struct aes128_dev aes128_dev;
 typedef struct aes128_context aes128_context;
 typedef struct aes128_task aes128_task;
 typedef struct aes128_command aes128_command;
 
-typedef uint32_t aes_dma_addr_t;
+typedef uint32_t aes_dma_addr_t;    /* Aes device supports 32-bit addresses. */
 
-struct aes128_circ_buff
+struct aes128_combo_buffer
 {
-  size_t head;
-  size_t tail;
-  char *data;
+  size_t read_tail;         /* Start reading encrypted data here.  */
+  size_t write_tail;        /* Stop reading encrypted data before this.  */
+  size_t write_head;        /* Append new data here.  */
+  char *k_data;             /* Kernel address space */
+  aes_dma_addr_t d_data;    /* DMA address space */
 };
 
 struct aes128_block
@@ -57,6 +58,8 @@ struct aes128_dev
   struct list_head context_list_head;
   struct list_head task_list_head;
   struct list_head completed_list_head;
+  
+  int minor;
 };
 
 struct aes128_context
@@ -70,19 +73,24 @@ struct aes128_context
 
   wait_queue_head_t read_queue;
   wait_queue_head_t write_queue;
-  struct mutex lock;
 
-  char file_open;       /* Is the file still open? */
-  int cmds_in_progress; /* How many commands are in device queue? */
+  struct mutex read_lock;       /* Protect read buffer.  */
+  struct mutex write_lock;      /* Protect write buffer.  */
+
+  char file_open;               /* Is the file still open?  */
+  int cmds_in_progress;         /* How many commands are in device queue?  */
+  
+  unsigned int flags;           /* Passed to open.  */
 
   struct list_head context_list;
   struct list_head completed_list_head;
 
-  aes_dma_addr_t d_ks_ptr;
+  aes_dma_addr_t d_ks_ptr;      /* Key and state buffer.  */
   aes128_block *k_ks_ptr;
+  
 };
 
-/* Complete set of information for one command */
+/* Complete set of information for one command.  */
 struct aes128_task
 {
   uint32_t d_input_data_ptr;
@@ -119,8 +127,6 @@ static long file_ioctl (struct file *f, unsigned int cmd, unsigned long arg);
 /* PCI operations */
 static int pci_probe (struct pci_dev *dev, const struct pci_device_id *id);
 static void pci_remove (struct pci_dev *dev);
-static int pci_suspend (struct pci_dev *dev, pm_message_t state);
-static int pci_resume (struct pci_dev *dev);
 static void pci_shutdown (struct pci_dev *dev);
 
 /* Cyclic buffers */
