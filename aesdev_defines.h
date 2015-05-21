@@ -51,8 +51,8 @@
 #define AESDEV_BLOCK_CMD 0x50
 
 #define AESDRV_IOBUFF_SIZE (0x100 * sizeof (aes128_block))
-#define AESDRV_CMDBUFF_SIZE (0x5 * sizeof (aes128_command))
-#define AESDRV_CMDBUFF_SLOTS (AESDRV_CMDBUFF_SIZE / sizeof (aes128_command))
+#define AESDRV_CMDBUFF_SLOTS (0x100)
+#define AESDRV_CMDBUFF_SIZE (AESDRV_CMDBUFF_SLOTS * sizeof (aes128_command))
 
 #define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
 #define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
@@ -63,7 +63,7 @@
     {\
         printk(KERN_WARNING "%s: " msg, __func__, ##__VA_ARGS__);\
     } while (0)
-//#define KDEBUG(...)
+#define KDEBUG(...)
 
 #define DNOTIF_ENTER_FUN KDEBUG ("entering\n")
 #define DNOTIF_LEAVE_FUN KDEBUG ("leaving\n")

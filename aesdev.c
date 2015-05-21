@@ -128,8 +128,7 @@ move_completed_tasks (aes128_context *context)
 __must_check static size_t
 __free_task_slots (aes128_dev *aes_dev)
 {
-  //  return AESDRV_IOBUFF_SIZE - 3 - aes_dev->tasks_in_progress;
-  return 3 - aes_dev->tasks_in_progress;
+    return AESDRV_CMDBUFF_SLOTS - aes_dev->tasks_in_progress - 1;
 }
 
 __must_check static size_t
@@ -517,24 +516,21 @@ irq_handler (int irq, void *ptr)
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
-    KDEBUG ("intr=0x%02x read_ind=%x task->cmd_index=%x stoi=%x\n",
-            intr, aes_dev->read_index, task->cmd_index, stoi);
-    KDEBUG ("%d == %d?\n", ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS), aes_dev->read_index);
-    //    if (!stoi && ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS) == aes_dev->read_index)
-    //      {
-    //        assert (!((1 << task->cmd_index) & intr));
-    //        KDEBUG ("breaking\n");
-    //        break;
-    //      }
-    //    assert ((1 << task->cmd_index) & intr);
-    if ((1 << task->cmd_index) & intr)
+    //    KDEBUG ("intr=0x%02x read_ind=%x task->cmd_index=%x stoi=%x\n",
+    //            intr, aes_dev->read_index, task->cmd_index, stoi);
+    //    KDEBUG ("%d == %d?\n", ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS), aes_dev->read_index);
+    if (!stoi && ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS) == aes_dev->read_index)
       {
-        list_del (&task->task_list);
-        list_add_tail (&task->task_list, &aes_dev->completed_list_head);
-        aes_dev->tasks_in_progress--;
-        /* Notify about new data.  */
-        wake_up_interruptible (&task->context->buffer.read_queue);
+//        assert (!((1 << task->cmd_index) & intr));
+        KDEBUG ("breaking\n");
+        break;
       }
+//    assert ((1 << task->cmd_index) & intr);
+    list_del (&task->task_list);
+    list_add_tail (&task->task_list, &aes_dev->completed_list_head);
+    aes_dev->tasks_in_progress--;
+    /* Notify about new data.  */
+    wake_up_interruptible (&task->context->buffer.read_queue);
   }
 
   /* My interrupt => at least one command completed.  */
@@ -621,7 +617,7 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
   context->buffer.read_count -= to_copy1;
   assert (context->buffer.read_count >= 0);
   //  retval = to_copy;
-  retval = to_copy;
+  retval = to_copy1;
   wake_up (&context->buffer.write_queue);
 
 exit:
@@ -747,8 +743,8 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   cmd->out_ptr = task->inout_buffer.d_ptr;
   cmd->ks_ptr = context->ks_buffer.d_ptr;
   cmd->xfer_val = AESDEV_TASK (task->block_count,
-                               1 << task->cmd_index,
-                               //                               0x01,
+                               //                               1 << task->cmd_index,
+                               0x01,
                                HAS_STATE (context->mode),
                                context->mode);
 
