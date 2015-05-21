@@ -43,155 +43,32 @@ static struct pci_driver aes_pci = {
 /*****************************************************************************/
 
 /*** Helpers *****************************************************************/
-
-/*
- * Insert task into device queue. Sleep if no space in queue.
- */
-__attribute__ ((warn_unused_result))
-static int
-task_enqueue (aes128_task *task)
+static void
+task_init (aes128_task *task)
 {
-  void __iomem *bar0;
-  aes128_command *cmd;
-  aes128_context *context;
-  aes128_dev *aes_dev;
-  aes_dma_addr_t d_write_ptr;
-  unsigned long irq_flags;
-  DNOTIF_ENTER_FUN;
-
-  context = task->context;
-  aes_dev = context->aes_dev;
-  bar0 = aes_dev->bar0;
-
-  KDEBUG ("%d commands in progress\n", aes_dev->tasks_in_progress);
-
-  /*** CRITICAL SECTION ****/
-  AESDEV_STOP (context->aes_dev);
-  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
-
-  /* Wait until space is available in command buffer.  */
-  while (aes_dev->tasks_in_progress >= 7)
-    {
-      spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
-      AESDEV_START (context->aes_dev);
-
-      if (context->flags & O_NONBLOCK)
-        {
-          return -EAGAIN;
-        }
-
-      KDEBUG ("going to sleep :(\n");
-      wait_event (context->aes_dev->command_queue, aes_dev->tasks_in_progress < 7);
-      KDEBUG ("woke up with %d commands in progress\n", aes_dev->tasks_in_progress);
-
-      AESDEV_STOP (context->aes_dev);
-      spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
-    }
-
-  /* Insert task into active tasks list.  */
-  list_add_tail (&task->task_list, &aes_dev->task_list_head);
-  aes_dev->tasks_in_progress++;
-
-  /* Get my spot in queue and my index (intr number).  */
-  d_write_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
-  task->cmd_index = AESDEV_CMD_INDEXOF (aes_dev->d_cmd_buff_ptr, d_write_ptr);
-
-  /* Write command to device */
-  cmd = ADD_OFFSET (aes_dev->k_cmd_buff_ptr, (size_t) d_write_ptr - (size_t) aes_dev->d_cmd_buff_ptr);
-  cmd->in_ptr = task->d_input_data_ptr;
-  cmd->out_ptr = task->d_output_data_ptr;
-  cmd->ks_ptr = task->context->d_ks_ptr;
-  cmd->xfer_val = AESDEV_TASK (task->block_count, 1 << task->cmd_index, 0x01, task->mode);
-
-  /* Increment write pointer to next command */
-  d_write_ptr += sizeof (aes128_command);
-  if (d_write_ptr == aes_dev->d_cmd_buff_ptr + AESDRV_CMDBUFF_SIZE)
-    d_write_ptr = aes_dev->d_cmd_buff_ptr;
-  iowrite32 (d_write_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
-
-  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
-  AESDEV_START (context->aes_dev);
-  /*** END CRITICAL SECTION ***/
-
-  DNOTIF_LEAVE_FUN;
-  return 0;
+  memset (task, 0, sizeof (aes128_task));
+  INIT_LIST_HEAD (&task->task_list);
 }
 
-__attribute__ ((warn_unused_result))
-static int
-task_create (aes128_context *context)
-{
-  aes128_task *aes_task;
-  dma_addr_t temp_dma_addr;
-  int ret;
-
-  DNOTIF_ENTER_FUN;
-
-  if (cbuf_cont (&context->write_buffer) < 16)
-    {
-      return -EINVAL;
-    }
-
-  /* Creating new task */
-  KDEBUG ("enough data, creating new task!\n");
-
-  aes_task = kmalloc (sizeof (aes128_task), GFP_KERNEL);
-  memset (aes_task, 0, sizeof (aes128_task));
-  INIT_LIST_HEAD (&aes_task->task_list);
-
-  aes_task->block_count = cbuf_cont (&context->write_buffer) / 16;
-  aes_task->context = context;
-  aes_task->mode = context->mode;
-
-  KDEBUG ("encrypting %d blocks\n", aes_task->block_count);
-
-  aes_task->k_input_data_ptr =
-          dma_alloc_coherent (&context->aes_dev->pci_dev->dev,
-                              aes_task->block_count * sizeof (aes128_block),
-                              &temp_dma_addr, GFP_KERNEL);
-  aes_task->d_input_data_ptr = temp_dma_addr;
-  aes_task->k_output_data_ptr =
-          dma_alloc_coherent (&context->aes_dev->pci_dev->dev,
-                              aes_task->block_count * sizeof (aes128_block),
-                              &temp_dma_addr, GFP_KERNEL);
-  aes_task->d_output_data_ptr = temp_dma_addr;
-
-  KDEBUG ("DMA alloc ok, copying\n");
-
-  /* Copy data for DMA */
-  /* Data blocks */
-  cbuf_take (aes_task->k_input_data_ptr,
-             &context->write_buffer,
-             aes_task->block_count * sizeof (aes128_block));
-
-  KDEBUG ("DMA copied, removing from cbuf\n");
-  KDEBUG ("registering task %p in context %p\n", aes_task, context);
-  KDEBUG ("enqueing task\n");
-  ret = task_enqueue (aes_task);
-  KDEBUG ("ret = %d\n", ret);
-  DNOTIF_LEAVE_FUN;
-  return ret;
-}
-
-static int
+static void
 task_destroy (aes128_task *task)
 {
   list_del (&task->task_list);
-  dma_free_coherent (&task->context->aes_dev->pci_dev->dev, AESDRV_IOBUFF_SIZE,
-                     task->k_input_data_ptr, task->d_input_data_ptr);
-  dma_free_coherent (&task->context->aes_dev->pci_dev->dev, AESDRV_IOBUFF_SIZE,
-                     task->k_output_data_ptr, task->d_output_data_ptr);
   kfree (task);
-  return 0;
 }
 
-static int
-move_completed_tasks (aes128_context *context)
+/* Pick completed tasks from device and return total size of data
+   available to read by user.  */
+__must_check static size_t
+__move_completed_tasks (aes128_context *context)
 {
   aes128_task *task, *temp_task;
   unsigned long flags;
+  struct list_head my_tasks;
 
   DNOTIF_ENTER_FUN;
+
+  INIT_LIST_HEAD (&my_tasks);
 
   /*** CRITICAL SECTION ****/
   spin_lock_irqsave (&context->aes_dev->lock, flags);
@@ -202,213 +79,406 @@ move_completed_tasks (aes128_context *context)
     if (task->context == context)
       {
         list_del (&task->task_list);
-        list_add_tail (&task->task_list, &context->completed_list_head);
+        list_add_tail (&task->task_list, &my_tasks);
       }
   }
-
   spin_unlock_irqrestore (&context->aes_dev->lock, flags);
+
   /*** END CRITICAL SECTION ****/
 
-  /* Copy from tasks to buffer - as long as space is available.  */
-  list_for_each_entry_safe (task, temp_task, &context->completed_list_head, task_list)
+  list_for_each_entry_safe (task, temp_task, &my_tasks, task_list)
   {
-    if (cbuf_free (&context->read_buffer) >= task->block_count * sizeof (aes128_block))
-      {
-        cbuf_add_from_kernel (&context->read_buffer, (char *) task->k_output_data_ptr, task->block_count * sizeof (aes128_block));
-        task_destroy (task);
-      }
-    else
-      break;
+    KDEBUG ("moving task %p\n", task);
+
+    context->buffer.write_tail += task->block_count * sizeof (aes128_block);
+    context->buffer.write_tail %= AESDRV_IOBUFF_SIZE;
+
+    context->buffer.read_count += task->block_count * sizeof (aes128_block);
+    context->buffer.write_count -= task->block_count * sizeof (aes128_block);
+
+    assert (context->buffer.read_count > 0
+            && context->buffer.read_count <= AESDRV_IOBUFF_SIZE);
+
+    assert (context->buffer.write_count >= 0
+            && context->buffer.write_count <= AESDRV_IOBUFF_SIZE);
+
+    task_destroy (task);
   }
-  DNOTIF_LEAVE_FUN;
-  return 0;
-}
 
-static size_t
-available_read_data (aes128_context *context)
-{
-  DNOTIF_ENTER_FUN;
-
-  /* If no data is available, try to download some from the device.  */
-  if (cbuf_cont (&context->read_buffer) == 0)
-    move_completed_tasks (context);
+  KDEBUG ("returning %d\n", acb_read_count (&context->buffer));
 
   DNOTIF_LEAVE_FUN;
-  return cbuf_cont (&context->read_buffer);
-}
-/*****************************************************************************/
-
-/*** Circular buffer *********************************************************/
-
-/*
- * Number of free spots in circular buffer.
- */
-static inline size_t
-cbuf_free (const struct circ_buf *buf)
-{
-  return CIRC_SPACE (buf->head, buf->tail, AESDRV_IOBUFF_SIZE);
+  return acb_read_count (&context->buffer);
 }
 
-/*
- * Number of items in circular buffer.
- */
-static inline size_t
-cbuf_cont (const struct circ_buf *buf)
+__must_check static size_t
+move_completed_tasks (aes128_context *context)
 {
-  return CIRC_CNT (buf->head, buf->tail, AESDRV_IOBUFF_SIZE);
-}
-
-/*
- * Copy data from kernel memory space to buffer.
- */
-static int
-cbuf_add_from_kernel (struct circ_buf *buf, const char *data, size_t len)
-{
-  size_t len1, len2;
-  DNOTIF_ENTER_FUN;
-  KDEBUG ("had before %d\n", cbuf_cont (buf));
-
-  if (cbuf_free (buf) < len)
-    {
-      KDEBUG ("not enough space in buffer!\n");
-      return -1;
-    }
-
-  len1 = min (len, (size_t) CIRC_SPACE_TO_END (buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
-  len2 = len - len1;
-
-  memcpy (buf->buf + buf->head, data, len1);
-  if (len2)
-    memcpy (buf->buf, data + len1, len2);
-
-  buf->head = (buf->head + len) % AESDRV_IOBUFF_SIZE;
-
-  KDEBUG ("have now %d\n", cbuf_cont (buf));
-  DNOTIF_LEAVE_FUN;
-  return 0;
-}
-
-/*
- * Copy len elements from __user *data to circular buffer.
- */
-static int
-cbuf_add_from_user (struct circ_buf *buf, const char __user *data, size_t len)
-{
-  int ret;
-  size_t len1, len2;
-  DNOTIF_ENTER_FUN;
-
-  if (cbuf_free (buf) < len)
-    {
-      KDEBUG ("not enough space in buffer!\n");
-      return -1;
-    }
-
-  KDEBUG ("first user's=%02x\n", data[0] & 0xFF);
-
-  len1 = min (len, (size_t) CIRC_SPACE_TO_END (buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
-  len2 = len - len1;
-
-  ret = copy_from_user (buf->buf + buf->head, data, len1);
-  ret = copy_from_user (buf->buf, data + len1, len2);
-
-  KDEBUG ("head before=%d tail before=%d len=%d len1=%d len2=%d\n", buf->head, buf->tail, len, len1, len2);
-  buf->head = (buf->head + len) % AESDRV_IOBUFF_SIZE;
-  KDEBUG ("head after=%d tail after=%d\n", buf->head, buf->tail);
-
-  KDEBUG ("first at tail=%02x last at head=%02x\n", *(buf->buf + buf->tail),
-          *(buf->buf + buf->head));
-
-  DNOTIF_LEAVE_FUN;
+  size_t ret;
+  mutex_lock (&context->buffer.common_lock);
+  ret = __move_completed_tasks (context);
+  mutex_unlock (&context->buffer.common_lock);
   return ret;
 }
 
 /*
- * Move len elements from buffer to vdest. If vdest == NULL discard.
+ Do NOT use this function without spinlock.
  */
-static int
-cbuf_take (void *vdest, struct circ_buf *buf, size_t len)
+__must_check static size_t
+__free_task_slots (aes128_dev *aes_dev)
 {
-  size_t len1, len2;
-  char *dest;
-
-  DNOTIF_ENTER_FUN;
-  dest = vdest;
-
-  if (cbuf_cont (buf) < len)
-    {
-      KDEBUG ("not enough elements in buffer!\n");
-      return -1;
-    }
-
-  len1 = min (len, (size_t) CIRC_CNT_TO_END (buf->head, buf->tail, AESDRV_IOBUFF_SIZE));
-  len2 = len - len1;
-
-  if (dest != NULL)
-    {
-      memcpy (dest, buf->buf + buf->tail, len1);
-      memcpy (dest + len1, buf->buf, len2);
-    }
-
-  buf->tail = (buf->tail + len) % AESDRV_IOBUFF_SIZE;
-
-  DNOTIF_LEAVE_FUN;
-  return 0;
+  return 7 - aes_dev->tasks_in_progress;
 }
 
-static int
-cbuf_take_tail (struct circ_buf *buf, size_t len)
+__must_check static size_t
+free_task_slots (aes128_dev *aes_dev)
 {
-  buf->head = (buf->head + AESDRV_IOBUFF_SIZE - len) % AESDRV_IOBUFF_SIZE;
-  return 0;
+  unsigned long irq_flags;
+  size_t ret;
+
+  /* TODO Czy tu jest potrzebny spinlock?  */
+  spin_lock_irqsave (&aes_dev->lock, irq_flags);
+  ret = __free_task_slots (aes_dev);
+  spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
+
+  return ret;
 }
 /*****************************************************************************/
 
 /*** AES context *************************************************************/
-static void
+__must_check static int
 context_init (aes128_context *context, aes128_dev *aes_dev)
 {
   dma_addr_t temp_dma_addr;
+  int ret;
 
   DNOTIF_ENTER_FUN;
+
   memset (context, 0, sizeof (aes128_context));
+
+  ret = acb_init (&context->buffer, aes_dev);
+  if (IS_ERR_VALUE (ret))
+    {
+      printk (KERN_WARNING "acb_init\n");
+      return ret;
+    }
+
   context->mode = AES_UNDEF;
-  context->read_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
-  context->write_buffer.buf = kmalloc (AESDRV_IOBUFF_SIZE, GFP_KERNEL);
-  context->file_open = 1;
   context->aes_dev = aes_dev;
-  context->k_ks_ptr = dma_alloc_coherent (&aes_dev->pci_dev->dev,
-                                          2 * sizeof (aes128_block),
-                                          &temp_dma_addr, GFP_KERNEL);
-  context->d_ks_ptr = temp_dma_addr;
-  init_waitqueue_head (&context->read_queue);
-  init_waitqueue_head (&context->write_queue);
-  mutex_init (&context->read_lock);
-  mutex_init (&context->write_lock);
+  context->ks_buffer.k_ptr = dma_alloc_coherent (&aes_dev->pci_dev->dev,
+                                                 2 * sizeof (aes128_block),
+                                                 &temp_dma_addr, GFP_KERNEL);
+  context->ks_buffer.d_ptr = temp_dma_addr;
+  if (context->ks_buffer.k_ptr == NULL)
+    {
+      acb_destroy (&context->buffer, aes_dev);
+      DNOTIF_LEAVE_FUN;
+      return -ENOMEM;
+    }
+
   INIT_LIST_HEAD (&context->context_list);
-  INIT_LIST_HEAD (&context->completed_list_head);
   list_add (&context->context_list, &aes_dev->context_list_head);
+
+  return 0;
   DNOTIF_LEAVE_FUN;
 }
 
-static void
-context_destroy (aes128_context *context)
+//static void
+//context_destroy (aes128_context *context)
+//{
+//  unsigned long irq_flags;
+//  DNOTIF_ENTER_FUN;
+//  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+//  list_del (&context->context_list);
+//  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
+//  dma_free_coherent (&context->aes_dev->pci_dev->dev,
+//                     2 * sizeof (aes128_block),
+//                     context->ks_buffer.k_ptr,
+//                     context->ks_buffer.d_ptr);
+//  acb_destroy (&context->buffer, context->aes_dev);
+//  mutex_destroy (&context->lock);
+//  kfree (context);
+//  DNOTIF_LEAVE_FUN;
+//}
+/*****************************************************************************/
+
+/*** Combo buffer ************************************************************/
+__must_check static int
+acb_init (aes128_combo_buffer *buffer, aes128_dev *aes_dev)
 {
-  unsigned long irq_flags;
+  dma_addr_t tmp_dma_addr;
   DNOTIF_ENTER_FUN;
-  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
-  list_del (&context->context_list);
-  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
-  mutex_destroy (&context->read_lock);
-  mutex_destroy (&context->write_lock);
-  dma_free_coherent (&context->aes_dev->pci_dev->dev,
-                     2 * sizeof (aes128_block),
-                     context->k_ks_ptr,
-                     context->d_ks_ptr);
-  kfree (context->read_buffer.buf);
-  kfree (context->write_buffer.buf);
-  kfree (context);
+
+  memset (buffer, 0, sizeof (aes128_combo_buffer));
+
+  /* Start with allocation to avoid cleanup on failure later.  */
+  buffer->data.k_ptr = dma_alloc_coherent (&aes_dev->pci_dev->dev,
+                                           AESDRV_IOBUFF_SIZE,
+                                           &tmp_dma_addr,
+                                           GFP_KERNEL);
+  if (buffer->data.k_ptr == NULL)
+    return -ENOMEM;
+  buffer->data.d_ptr = tmp_dma_addr;
+
+  mutex_init (&buffer->read_lock);
+  mutex_init (&buffer->write_lock);
+  mutex_init (&buffer->common_lock);
+
+  init_waitqueue_head (&buffer->read_queue);
+  init_waitqueue_head (&buffer->write_queue);
+
   DNOTIF_LEAVE_FUN;
+  return 0;
+}
+
+static void
+acb_destroy (aes128_combo_buffer *buffer, aes128_dev *aes_dev)
+{
+  DNOTIF_ENTER_FUN;
+  mutex_destroy (&buffer->read_lock);
+  mutex_destroy (&buffer->write_lock);
+  mutex_destroy (&buffer->common_lock);
+  dma_free_coherent (&aes_dev->pci_dev->dev,
+                     AESDRV_IOBUFF_SIZE,
+                     buffer->data.k_ptr,
+                     buffer->data.d_ptr);
+  /* TODO Deinit waitqueue?  */
+  kfree (buffer);
+  DNOTIF_LEAVE_FUN;
+}
+
+static size_t
+acb_read_count (const aes128_combo_buffer *buffer)
+{
+  return buffer->read_count;
+}
+
+static size_t
+acb_write_count (const aes128_combo_buffer *buffer)
+{
+  return buffer->write_count;
+}
+
+static size_t
+acb_write_count_to_end (const aes128_combo_buffer *buffer)
+{
+  if (buffer->write_tail + buffer->write_count <= AESDRV_IOBUFF_SIZE)
+    return buffer->write_count;
+  return AESDRV_IOBUFF_SIZE - buffer->write_tail;
+}
+
+static size_t
+acb_to_encrypt_count_to_end (const aes128_combo_buffer *buffer)
+{
+  if (buffer->to_encrypt_tail + buffer->to_encrypt_count <= AESDRV_IOBUFF_SIZE)
+    return buffer->to_encrypt_count;
+  return AESDRV_IOBUFF_SIZE - buffer->to_encrypt_tail;
+}
+
+static size_t
+acb_free (const aes128_combo_buffer *buffer)
+{
+  return AESDRV_IOBUFF_SIZE - buffer->write_count - buffer->read_count;
+}
+
+static size_t
+mut_acb_free (aes128_combo_buffer *buffer)
+{
+  size_t ret;
+  mutex_lock (&buffer->common_lock);
+  ret = acb_free (buffer);
+  mutex_unlock (&buffer->common_lock);
+  return ret;
+}
+
+static size_t
+acb_free_to_end (const aes128_combo_buffer *buffer)
+{
+  if (buffer->read_tail == buffer->write_head)
+    {
+      if (buffer->write_count == 0 && buffer->read_count == 0)
+        return AESDRV_IOBUFF_SIZE - buffer->write_head;
+      else
+        return 0;
+    }
+  if (buffer->read_tail < buffer->write_head)
+    return AESDRV_IOBUFF_SIZE - buffer->write_head;
+  else
+    return buffer->read_tail - buffer->write_head;
+}
+
+static size_t
+acb_read_count_to_end (const aes128_combo_buffer *buffer)
+{
+  if (buffer->read_tail + buffer->read_count <= AESDRV_IOBUFF_SIZE)
+    return buffer->read_count;
+  return AESDRV_IOBUFF_SIZE - buffer->read_tail;
+}
+
+__used
+static void
+acb_run_tests (aes128_dev *aes_dev)
+{
+  aes128_combo_buffer buffer;
+  if (acb_init (&buffer, aes_dev))
+    KDEBUG ("acb_init\n");
+
+  KDEBUG ("read_tail=%d write_tail=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == AESDRV_IOBUFF_SIZE);
+  assert (acb_free_to_end (&buffer) == AESDRV_IOBUFF_SIZE);
+  assert (acb_read_count (&buffer) == 0);
+  assert (acb_read_count_to_end (&buffer) == 0);
+  assert (acb_write_count (&buffer) == 0);
+  assert (acb_write_count_to_end (&buffer) == 0);
+
+  buffer.write_head += 16;
+  buffer.write_head %= AESDRV_IOBUFF_SIZE;
+  buffer.write_count += 16;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == AESDRV_IOBUFF_SIZE - 16);
+  assert (acb_free_to_end (&buffer) == AESDRV_IOBUFF_SIZE - 16);
+  assert (acb_read_count (&buffer) == 0);
+  assert (acb_read_count_to_end (&buffer) == 0);
+  assert (acb_write_count (&buffer) == 16);
+  assert (acb_write_count_to_end (&buffer) == 16);
+
+  buffer.write_head += 16;
+  buffer.write_count += 16;
+  buffer.write_head %= AESDRV_IOBUFF_SIZE;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == 0);
+  assert (acb_free_to_end (&buffer) == 0);
+  assert (acb_read_count (&buffer) == 0);
+  assert (acb_read_count_to_end (&buffer) == 0);
+  assert (acb_write_count (&buffer) == 32);
+  assert (acb_write_count_to_end (&buffer) == 32);
+
+  buffer.write_tail += 16;
+  buffer.write_tail %= AESDRV_IOBUFF_SIZE;
+  buffer.read_count += 16;
+  buffer.write_count -= 16;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == 0);
+  assert (acb_free_to_end (&buffer) == 0);
+  assert (acb_read_count (&buffer) == 16);
+  assert (acb_read_count_to_end (&buffer) == 16);
+  assert (acb_write_count (&buffer) == 16);
+  assert (acb_write_count_to_end (&buffer) == 16);
+
+  buffer.write_tail += 16;
+  buffer.write_tail %= AESDRV_IOBUFF_SIZE;
+  buffer.read_count += 16;
+  buffer.write_count -= 16;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == 0);
+  assert (acb_free_to_end (&buffer) == 0);
+  assert (acb_read_count (&buffer) == 32);
+  assert (acb_read_count_to_end (&buffer) == 32);
+  assert (acb_write_count (&buffer) == 0);
+  assert (acb_write_count_to_end (&buffer) == 0);
+
+  buffer.read_tail += 16;
+  buffer.read_tail %= AESDRV_IOBUFF_SIZE;
+  buffer.read_count -= 16;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == 16);
+  assert (acb_free_to_end (&buffer) == 16);
+  assert (acb_read_count (&buffer) == 16);
+  assert (acb_read_count_to_end (&buffer) == 16);
+  assert (acb_write_count (&buffer) == 0);
+  assert (acb_write_count_to_end (&buffer) == 0);
+
+  buffer.write_head += 16;
+  buffer.write_head %= AESDRV_IOBUFF_SIZE;
+  buffer.write_count += 16;
+
+  buffer.write_tail += 16;
+  buffer.write_tail %= AESDRV_IOBUFF_SIZE;
+  buffer.read_count += 16;
+  buffer.write_count -= 16;
+
+  KDEBUG ("read_tail=%d read_head=%d write_head=%d write_count=%d read_count=%d\n",
+          buffer.read_tail, buffer.write_tail, buffer.write_head,
+          buffer.write_count, buffer.read_count);
+  KDEBUG ("acb_free=%d acb_free_to_end=%d acb_read_count=%d acb_read_count_to_end=%d "
+          "acb_write_count=%d acb_write_count_to_end=%d\n",
+          acb_free (&buffer),
+          acb_free_to_end (&buffer),
+          acb_read_count (&buffer),
+          acb_read_count_to_end (&buffer),
+          acb_write_count (&buffer),
+          acb_write_count_to_end (&buffer));
+  assert (acb_free (&buffer) == 0);
+  assert (acb_free_to_end (&buffer) == 0);
+  assert (acb_read_count (&buffer) == 32);
+  assert (acb_read_count_to_end (&buffer) == 16);
+  assert (acb_write_count (&buffer) == 0);
+  assert (acb_write_count_to_end (&buffer) == 0);
 }
 /*****************************************************************************/
 
@@ -423,11 +493,10 @@ irq_handler (int irq, void *ptr)
 
   DNOTIF_ENTER_FUN;
 
-  /* TODO */
+  /* TODO Can this be not my pointer?  */
   aes_dev = ptr;
 
   /*** CRITICAL SECTION ***/
-  AESDEV_STOP (aes_dev);
   spin_lock_irqsave (&aes_dev->lock, irq_flags);
   intr = ioread32 (aes_dev->bar0 + AESDEV_INTR) & 0xFF;
   if (!intr)
@@ -446,21 +515,20 @@ irq_handler (int irq, void *ptr)
         list_add_tail (&task->task_list, &aes_dev->completed_list_head);
         aes_dev->tasks_in_progress--;
         /* Notify about new data.  */
-        wake_up (&task->context->read_queue);
+        wake_up_interruptible (&task->context->buffer.read_queue);
       }
   }
 
   /* My interrupt => at least one command completed.  */
-  wake_up (&aes_dev->command_queue);
+  wake_up_interruptible (&aes_dev->command_queue);
 
   /* All interrupts handled.  */
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
-  AESDEV_START (aes_dev);
   /*** END CRITICAL SECTION ***/
-  KDEBUG ("%d commands still in progress\n", aes_dev->tasks_in_progress);
 
+  DNOTIF_LEAVE_FUN;
   return IRQ_HANDLED;
 }
 /*****************************************************************************/
@@ -475,8 +543,9 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 
   DNOTIF_ENTER_FUN;
   context = f->private_data;
-  KDEBUG ("%d bytes in read buffer, len=%zu\n", cbuf_cont (&context->read_buffer), len);
-  mutex_lock (&context->read_lock);
+
+  mutex_lock (&context->buffer.read_lock);
+  mutex_lock (&context->buffer.common_lock);
 
   if (context->mode == AES_UNDEF)
     {
@@ -485,9 +554,10 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
       goto exit;
     }
 
+  KDEBUG ("in buffer before=%d\n", acb_read_count (&context->buffer));
   if (f->f_flags & O_NONBLOCK)
     {
-      if (available_read_data (context) == 0)
+      if (__move_completed_tasks (context) == 0)
         {
           KDEBUG ("no data, returning EAGAIN\n");
           retval = -EAGAIN;
@@ -496,38 +566,48 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
     }
   else
     {
-      while (available_read_data (context) == 0)
+      while (__move_completed_tasks (context) == 0)
         {
+          int _ret;
           KDEBUG ("going to sleep :(\n");
-          wait_event (context->read_queue, available_read_data (context) != 0);
+          mutex_unlock (&context->buffer.common_lock);
+          _ret = wait_event_interruptible (context->buffer.read_queue, move_completed_tasks (context) != 0);
+          mutex_lock (&context->buffer.common_lock);
+          if (_ret != 0)
+            {
+              retval = _ret;
+              goto exit;
+            }
         }
     }
+  KDEBUG ("in buffer after=%d\n", acb_read_count (&context->buffer));
+  assert (acb_read_count (&context->buffer) > 0);
 
-  to_copy = min (len, cbuf_cont (&context->read_buffer));
-  to_copy1 = min (to_copy, (size_t) CIRC_CNT_TO_END (context->read_buffer.head,
-                                                     context->read_buffer.tail,
-                                                     AESDRV_IOBUFF_SIZE));
+  to_copy = min (len, acb_read_count (&context->buffer));
+  to_copy1 = min (to_copy, acb_read_count_to_end (&context->buffer));
   to_copy2 = to_copy - to_copy1;
-  if (copy_to_user (buf, context->read_buffer.buf + context->read_buffer.tail, to_copy1))
+  if (copy_to_user (buf, context->buffer.data.k_ptr + context->buffer.read_tail, to_copy1))
     {
       KDEBUG ("copy_to_user\n");
-      retval = -ENOMEM;
+      retval = -EFAULT;
       goto exit;
     }
-  if (copy_to_user (buf + to_copy1, context->read_buffer.buf, to_copy2))
+  if (to_copy2 && copy_to_user (buf + to_copy1, context->buffer.data.k_ptr, to_copy2))
     {
       KDEBUG ("copy_to_user\n");
-      retval = -ENOMEM;
+      retval = -EFAULT;
       goto exit;
     }
-  context->read_buffer.tail = (context->read_buffer.tail + to_copy) % AESDRV_IOBUFF_SIZE;
-
-  KDEBUG ("%d bytes were read, %d left in buff\n", to_copy, cbuf_cont (&context->read_buffer));
+  context->buffer.read_tail += to_copy;
+  context->buffer.read_tail %= AESDRV_IOBUFF_SIZE;
+  context->buffer.read_count -= to_copy;
   retval = to_copy;
+  wake_up (&context->buffer.write_queue);
 
 exit:
   DNOTIF_LEAVE_FUN;
-  mutex_unlock (&context->read_lock);
+  mutex_unlock (&context->buffer.common_lock);
+  mutex_unlock (&context->buffer.read_lock);
   return retval;
 }
 
@@ -535,13 +615,23 @@ static ssize_t
 file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 {
   aes128_context *context;
+  void __iomem *bar0;
   ssize_t retval;
-  int to_take;
+  size_t to_take;
+  aes128_task *task;
+  aes128_dev *aes_dev;
+  aes128_command *cmd;
+  dma_ptr cmd_ptr;
+  unsigned long irq_flags;
 
   DNOTIF_ENTER_FUN;
   context = f->private_data;
-  KDEBUG ("%d bytes in write buffer, len=%zu\n", cbuf_cont (&context->write_buffer), len);
-  mutex_lock (&context->write_lock);
+  aes_dev = context->aes_dev;
+  bar0 = aes_dev->bar0;
+
+  mutex_lock (&context->buffer.write_lock);
+  mutex_lock (&context->buffer.common_lock);
+
   if (context->mode == AES_UNDEF)
     {
       KDEBUG ("no mode set\n");
@@ -549,68 +639,144 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
       goto exit;
     }
 
-  KDEBUG ("received %d bytes\n", len);
-  KDEBUG ("had before %d in buf\n", cbuf_cont (&context->write_buffer));
-  to_take = min (cbuf_free (&context->write_buffer), len);
-  cbuf_add_from_user (&context->write_buffer, buf, to_take);
-  KDEBUG ("have now %d in buf\n", cbuf_cont (&context->write_buffer));
-  KDEBUG ("my context is %p\n", context);
-  retval = task_create (context);
-  if (retval == 0)
-    retval = to_take;
-  else
+  while (acb_free (&context->buffer) == 0)
     {
-      /* Revert changes.  */
-      cbuf_take_tail (&context->write_buffer, to_take);
+      if (f->f_flags & O_NONBLOCK)
+        {
+          KDEBUG ("no space in buffer => EAGAIN\n");
+          retval = -EAGAIN;
+          goto exit;
+        }
+      else
+        {
+          int _ret;
+
+          KDEBUG ("no space in buffer => sleep\n");
+          mutex_unlock (&context->buffer.common_lock);
+          _ret = wait_event_interruptible (context->buffer.write_queue, mut_acb_free (&context->buffer) != 0);
+          mutex_lock (&context->buffer.common_lock);
+
+          if (_ret != 0)
+            {
+              retval = _ret;
+              goto exit;
+            }
+        }
     }
+
+  to_take = min (acb_free_to_end (&context->buffer), len);
+  assert (to_take > 0);
+  if (copy_from_user (context->buffer.data.k_ptr + context->buffer.write_head,
+                      buf, to_take))
+    return -EFAULT;
+
+  context->buffer.write_head += to_take;
+  context->buffer.write_head %= AESDRV_IOBUFF_SIZE;
+  context->buffer.write_count += to_take;
+  context->buffer.to_encrypt_count += to_take;
+
+  assert (acb_to_encrypt_count_to_end (&context->buffer) > 0);
+  if (acb_to_encrypt_count_to_end (&context->buffer) / sizeof (aes128_block) == 0)
+    {
+      KDEBUG ("not enough data for new task (%d), returning\n",
+              acb_to_encrypt_count_to_end (&context->buffer));
+      retval = to_take;
+      goto exit;
+    }
+
+  task = kmalloc (sizeof (aes128_task), GFP_KERNEL);
+  task_init (task);
+  task->context = context;
+  task->block_count = acb_to_encrypt_count_to_end (&context->buffer) / sizeof (aes128_block);
+  assert (task->block_count > 0);
+  task->inout_buffer.d_ptr = context->buffer.data.d_ptr + context->buffer.to_encrypt_tail;
+  task->inout_buffer.k_ptr = context->buffer.data.k_ptr + context->buffer.to_encrypt_tail;
+  context->buffer.to_encrypt_count -= task->block_count * sizeof (aes128_block);
+  context->buffer.to_encrypt_tail += task->block_count * sizeof (aes128_block);
+  context->buffer.to_encrypt_tail %= AESDRV_IOBUFF_SIZE;
+
+  /*** CRITICAL SECTION ***/
+  spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+  /* Wait for space in command buffer.  */
+  while (__free_task_slots (context->aes_dev) < 1)
+    {
+      int _ret;
+      spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
+      _ret = wait_event_interruptible (context->aes_dev->command_queue,
+                                       free_task_slots (context->aes_dev) >= 1);
+      if (_ret != 0)
+        {
+          retval = _ret;
+          goto exit;
+        }
+      spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
+    }
+
+  KDEBUG ("have slots %d\n", __free_task_slots (context->aes_dev));
+
+  cmd_ptr.d_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
+  cmd_ptr.k_ptr = aes_dev->cmd_buffer.k_ptr + (cmd_ptr.d_ptr - aes_dev->cmd_buffer.d_ptr);
+
+  task->cmd_index = AESDEV_CMD_INDEXOF (aes_dev->cmd_buffer.d_ptr, cmd_ptr.d_ptr);
+
+  cmd = (aes128_command *) cmd_ptr.k_ptr;
+
+  cmd->in_ptr = task->inout_buffer.d_ptr;
+  cmd->out_ptr = task->inout_buffer.d_ptr;
+  cmd->ks_ptr = context->ks_buffer.d_ptr;
+  cmd->xfer_val = AESDEV_TASK (task->block_count,
+                               1 << task->cmd_index,
+                               HAS_STATE (context->mode),
+                               context->mode);
+
+  /* Save task to active task list on device.  */
+  list_add_tail (&task->task_list, &aes_dev->task_list_head);
+
+  /* Increment command write pointer.  */
+  cmd_ptr.d_ptr += sizeof (aes128_command);
+  if (cmd_ptr.d_ptr == aes_dev->cmd_buffer.d_ptr + AESDRV_CMDBUFF_SIZE)
+    cmd_ptr.d_ptr = aes_dev->cmd_buffer.d_ptr;
+  aes_dev->tasks_in_progress++;
+  iowrite32 ((uint32_t) cmd_ptr.d_ptr, context->aes_dev->bar0 + AESDEV_CMD_WRITE_PTR);
+
+  spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
+  /*** END CRITICAL SECTION ***/
+
+  retval = to_take;
 exit:
   DNOTIF_LEAVE_FUN;
-  mutex_unlock (&context->write_lock);
+  mutex_unlock (&context->buffer.common_lock);
+  mutex_unlock (&context->buffer.write_lock);
   return retval;
 }
 
 static int
-file_open (struct inode *i, struct file *f)
+file_open (struct inode *i, struct file * f)
 {
   aes128_context *context;
+  int ret;
   DNOTIF_ENTER_FUN;
 
   context = kmalloc (sizeof (aes128_context), GFP_KERNEL);
   f->private_data = context;
-  context_init (context, aes_devs[iminor (i)]);
-  context->flags = f->f_flags;
+  ret = context_init (context, aes_devs[iminor (i)]);
+  if (IS_ERR_VALUE (ret))
+    {
+      printk (KERN_WARNING "context_init\n");
+      return ret;
+    }
+
   KDEBUG ("assigned opened file to device %p at context %p\n", context->aes_dev, context);
   DNOTIF_LEAVE_FUN;
   return 0;
 }
 
 static int
-file_release (struct inode *i, struct file *f)
+file_release (struct inode *i, struct file * f)
 {
-  /* TODO */
-  aes128_context *context;
-
   DNOTIF_ENTER_FUN;
-
-  context = f->private_data;
-  mutex_lock (&context->write_lock);
-  mutex_lock (&context->read_lock);
-  /* Remember that the file has been closed */
-  context->file_open = 0;
-  if (context->cmds_in_progress == 0)
-    {
-      /* Gdy już skończyły się wszystkie operacje a plik
-       * jest zamknięty, to mogę bezpiecznie go wywalić z 
-       * urządzenia.  */
-      mutex_unlock (&context->write_lock);
-      mutex_unlock (&context->read_lock);
-      context_destroy (f->private_data);
-    }
-  else
-    {
-      mutex_unlock (&context->write_lock);
-      mutex_unlock (&context->read_lock);
-    }
+  //  KDEBUG ("destroing context %p\n", f->private_data);
+  //  context_destroy (f->private_data);
   DNOTIF_LEAVE_FUN;
   return 0;
 }
@@ -622,16 +788,10 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
   long retval;
 
   DNOTIF_ENTER_FUN;
-
   context = f->private_data;
-  mutex_lock (&context->write_lock);
-  mutex_lock (&context->read_lock);
 
-  if (context->mode == AES_UNDEF && cmd == AESDEV_IOCTL_GET_STATE)
-    {
-      retval = -EINVAL;
-      goto exit;
-    }
+  KDEBUG ("u context=%p mode=0x%x\n", context, context->mode);
+  mutex_lock (&context->buffer.common_lock);
 
   if /**/ (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AES_ECB_ENCRYPT;
   else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT) context->mode = AES_ECB_DECRYPT;
@@ -647,14 +807,22 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
           context->mode == AES_ECB_ENCRYPT ||
           context->mode == AES_UNDEF)
         {
+          KDEBUG ("illegal GET_STATE in current mode\n");
           retval = -EINVAL;
           goto exit;
         }
 
-      if (copy_to_user ((void *) arg, &context->k_ks_ptr[1], sizeof (aes128_block)))
+      if (context->buffer.read_count > 0 || context->buffer.write_count > 0)
+        {
+          KDEBUG ("illegal GET_STATE with data in buffer\n");
+          retval = -EINVAL;
+          goto exit;
+        }
+
+      if (copy_to_user ((void *) arg, context->ks_buffer.k_ptr + sizeof (aes128_block), sizeof (aes128_block)))
         {
           KDEBUG ("copy_to_user\n");
-          retval = -ENOMEM;
+          retval = -EFAULT;
           goto exit;
         }
 
@@ -662,15 +830,18 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
       goto exit;
     }
 
-  if (copy_from_user (&context->k_ks_ptr[0], (void *) arg, sizeof (aes128_block)))
+  /* Read encryption key.  */
+  if (copy_from_user (context->ks_buffer.k_ptr, (void *) arg, sizeof (aes128_block)))
     {
       KDEBUG ("copy_from_user\n");
-      retval = -ENOMEM;
+      retval = -EFAULT;
       goto exit;
     }
 
+  /* Read initialization vector.  */
   if (cmd != AESDEV_IOCTL_SET_ECB_ENCRYPT && cmd != AESDEV_IOCTL_SET_ECB_DECRYPT)
-    if (copy_from_user (&context->k_ks_ptr[1], ((char *) arg) + sizeof (aes128_block),
+    if (copy_from_user (context->ks_buffer.k_ptr + sizeof (aes128_block),
+                        ((char *) arg) + sizeof (aes128_block),
                         sizeof (aes128_block)))
       {
         KDEBUG ("copy_from_user\n");
@@ -678,47 +849,46 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
         goto exit;
       }
 
-  KDEBUG ("cmd=%d mode=%d, arg=%p\n", cmd, context->mode, (void *) arg);
   retval = 0;
 exit:
-  mutex_unlock (&context->write_lock);
-  mutex_unlock (&context->read_lock);
+  mutex_unlock (&context->buffer.common_lock);
   DNOTIF_LEAVE_FUN;
   return retval;
 }
 /*****************************************************************************/
 
 /*** Device procedures *******************************************************/
-static int
-init_cmd_buffer (aes128_dev *aes_dev)
+__must_check static int
+init_cmd_buffer (aes128_dev * aes_dev)
 {
   void __iomem *bar0;
   dma_addr_t tmp_dma_addr;
 
   DNOTIF_ENTER_FUN;
-
   bar0 = aes_dev->bar0;
 
-  /* TODO: 16-byte alignment */
-  aes_dev->k_cmd_buff_ptr =
+  /* Allocate the buffer.  */
+  aes_dev->cmd_buffer.k_ptr =
           dma_alloc_coherent (&aes_dev->pci_dev->dev, AESDRV_CMDBUFF_SIZE,
                               &tmp_dma_addr, GFP_KERNEL);
-  aes_dev->d_cmd_buff_ptr = tmp_dma_addr;
+  if (aes_dev->cmd_buffer.k_ptr == NULL)
+    return -ENOMEM;
+  aes_dev->cmd_buffer.d_ptr = tmp_dma_addr;
 
-  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_BEGIN_PTR);
-  /* TODO: Ostatni czy zaostatni? */
-  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr + AESDRV_CMDBUFF_SIZE, bar0 + AESDEV_CMD_END_PTR);
-  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_READ_PTR);
-  iowrite32 ((uint32_t) aes_dev->d_cmd_buff_ptr, bar0 + AESDEV_CMD_WRITE_PTR);
-
-  KDEBUG ("write ptr set to %p\n", &aes_dev->d_cmd_buff_ptr);
-  DNOTIF_LEAVE_FUN;
-
+  /* Tell device about buffer location.  */
+  iowrite32 ((uint32_t) aes_dev->cmd_buffer.d_ptr,
+             bar0 + AESDEV_CMD_BEGIN_PTR);
+  iowrite32 ((uint32_t) aes_dev->cmd_buffer.d_ptr + AESDRV_CMDBUFF_SIZE,
+             bar0 + AESDEV_CMD_END_PTR);
+  iowrite32 ((uint32_t) aes_dev->cmd_buffer.d_ptr,
+             bar0 + AESDEV_CMD_READ_PTR);
+  iowrite32 ((uint32_t) aes_dev->cmd_buffer.d_ptr,
+             bar0 + AESDEV_CMD_WRITE_PTR);
   return 0;
 }
 
 static int
-aes_dev_destroy (aes128_dev *aes_dev)
+aes_dev_destroy (aes128_dev * aes_dev)
 {
   DNOTIF_ENTER_FUN;
 
@@ -732,65 +902,98 @@ aes_dev_destroy (aes128_dev *aes_dev)
 
 /*** PCI handlers ************************************************************/
 static int
-turn_off_device (aes128_dev *aes_dev)
+turn_off_device (aes128_dev * aes_dev)
 {
   AESDEV_STOP (aes_dev);
   return 0;
 }
 
 static int
-pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
+pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
 {
   aes128_dev *aes_dev;
   uint32_t intr;
-  int minor;
+  int minor, ret;
 
   DNOTIF_ENTER_FUN;
+
+  /* TODO cleanup on failue.  */
 
   /* Find free slot for new device.  */
   for (minor = 0; minor < 256; ++minor)
     if (aes_devs[minor] == NULL)
       break;
 
-  if (pci_enable_device (pci_dev))
+  /* Too many devices in system.  */
+  if (minor == 256)
+    return -ENOMEM;
+
+  ret = pci_enable_device (pci_dev);
+  if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "pci_enable_device\n");
-      DNOTIF_LEAVE_FUN;
-      return -EFAULT;
+      return ret;
     }
-  if (pci_request_regions (pci_dev, "aesdev"))
+  ret = pci_request_regions (pci_dev, "aesdev");
+  if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "pci_request_regions\n");
-      DNOTIF_LEAVE_FUN;
-      return -EFAULT;
+      return ret;
     }
 
   /* Initialize new aes128_device structure.  */
   aes_dev = kmalloc (sizeof (aes128_dev), GFP_KERNEL);
+  if (aes_dev == NULL)
+    return -ENOMEM;
+
   memset (aes_dev, 0, sizeof (aes128_dev));
+
   spin_lock_init (&aes_dev->lock);
   init_waitqueue_head (&aes_dev->command_queue);
+
   INIT_LIST_HEAD (&aes_dev->context_list_head);
   INIT_LIST_HEAD (&aes_dev->task_list_head);
   INIT_LIST_HEAD (&aes_dev->completed_list_head);
+
   aes_dev->pci_dev = pci_dev;
   aes_dev->minor = minor;
-  aes_dev->tasks_in_progress = 0;
 
   aes_dev->bar0 = pci_iomap (pci_dev, 0, 0);
+  if (IS_ERR_OR_NULL (aes_dev->bar0))
+    {
+      printk (KERN_WARNING "pci_iomap\n");
+      return PTR_ERR (aes_dev->bar0);
+    }
+
   aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, minor), NULL, "aes%d", minor);
+  if (IS_ERR_OR_NULL (aes_dev->sys_dev))
+    {
+      printk (KERN_WARNING "device_create\n");
+      return PTR_ERR (aes_dev->sys_dev);
+    }
 
   pci_set_drvdata (pci_dev, aes_dev);
-
   pci_set_master (pci_dev);
-  pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));
-  pci_set_consistent_dma_mask (pci_dev, DMA_BIT_MASK (32));
 
-  if (request_irq (pci_dev->irq, irq_handler, IRQF_SHARED, "aesdev", aes_dev))
+  ret = pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));
+  if (IS_ERR_VALUE (ret))
     {
-      KDEBUG ("request_irq\n");
-      DNOTIF_LEAVE_FUN;
-      return -EFAULT;
+      printk (KERN_WARNING "pci_set_dma_mask\n");
+      return ret;
+    }
+
+  ret = pci_set_consistent_dma_mask (pci_dev, DMA_BIT_MASK (32));
+  if (IS_ERR_VALUE (ret))
+    {
+      printk (KERN_WARNING "pci_set_consistent_dma_mask\n");
+      return ret;
+    }
+
+  ret = request_irq (pci_dev->irq, irq_handler, IRQF_SHARED, "aesdev", aes_dev);
+  if (IS_ERR_VALUE (ret))
+    {
+      printk (KERN_WARNING "request_irq\n");
+      return ret;
     }
 
   /* Wyzeruj blok transferu danych */
@@ -798,17 +1001,22 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_OUT_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_STATE_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_TASK);
-  init_cmd_buffer (aes_dev);
+
+  if (init_cmd_buffer (aes_dev))
+    panic ("init_cmd_buffer");
 
   /* Skasuj ewentualne przerwania */
   intr = ioread32 (aes_dev->bar0 + AESDEV_INTR);
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
+  /* Włącz przerwania */
+  iowrite32 (0xFF, aes_dev->bar0 + AESDEV_INTR_ENABLE);
+
   /* Zarejestruj urządzenie w sterowniku */
   aes_devs[minor] = aes_dev;
 
-  /* Włącz przerwania */
-  iowrite32 (0xFF, aes_dev->bar0 + AESDEV_INTR_ENABLE);
+  /* Startujemy */
+  AESDEV_START (aes_dev);
 
   KDEBUG ("Registered new aesdev\n");
   DNOTIF_LEAVE_FUN;
@@ -816,7 +1024,7 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id *id)
 }
 
 static void
-pci_remove (struct pci_dev *pci_dev)
+pci_remove (struct pci_dev * pci_dev)
 {
   aes128_dev *aes_dev;
 
@@ -837,7 +1045,7 @@ pci_remove (struct pci_dev *pci_dev)
 }
 
 static void
-pci_shutdown (struct pci_dev *dev)
+pci_shutdown (struct pci_dev * dev)
 {
   DNOTIF_ENTER_FUN;
   turn_off_device (pci_get_drvdata (dev));
@@ -849,18 +1057,31 @@ pci_shutdown (struct pci_dev *dev)
 static int
 aesdrv_init (void)
 {
-  DNOTIF_ENTER_FUN;
+  int ret;
+  assert ("Hello" && 0);
   KDEBUG ("hello\n");
 
   /* Rejestracja majora */
   major = register_chrdev (0, "aesdev", &aes_fops);
+  if (IS_ERR_VALUE (major))
+    {
+      printk (KERN_WARNING "register_chrdev\n");
+      return ret;
+    }
+
   dev_class = class_create (THIS_MODULE, "aesdev");
+  if (IS_ERR_OR_NULL (dev_class))
+    {
+      printk (KERN_WARNING "class_create\n");
+      return PTR_ERR (dev_class);
+    }
 
   /* Rejestracja drivera PCI */
-  if (pci_register_driver (&aes_pci))
+  ret = pci_register_driver (&aes_pci);
+  if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "pci_register_driver\n");
-      return -EFAULT;
+      return ret;
     }
 
   return 0;
@@ -879,7 +1100,6 @@ aesdrv_cleanup (void)
       }
   class_destroy (dev_class);
   pci_unregister_driver (&aes_pci);
-  KDEBUG ("bye\n");
 }
 
 module_init (aesdrv_init);

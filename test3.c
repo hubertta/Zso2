@@ -208,9 +208,9 @@ test_ecb ()
   fprintf (stderr, "ECB encrypt (4): %s\n", ok ? "ok" : "err");
 
   /** Test 5 ***/
-  for (i = 0; i < 64; ++i)
+  for (i = 0; i < 10; ++i)
     do_write (fd, all_text, 64);
-  for (i = 0, ok = 1; i < 64 * 64; ++i)
+  for (i = 0, ok = 1; i < 10 * 64; ++i)
     {
       do_read (fd, all_result + (i % 64), 1);
       if (!is_equal (all_result + (i % 64), all_cipher + (i % 64), 1))

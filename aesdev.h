@@ -17,6 +17,7 @@ struct aes128_dev;              /* Represents single aes device.  */
 struct aes128_context;          /* Corresponds to single struct file.  */
 struct aes128_command;          /* Represents one slot in dev's cmd buffer.  */
 struct aes128_task;
+struct dma_ptr;
 
 typedef struct aes128_combo_buffer aes128_combo_buffer;
 typedef struct aes128_block aes128_block;
@@ -24,17 +25,43 @@ typedef struct aes128_dev aes128_dev;
 typedef struct aes128_context aes128_context;
 typedef struct aes128_task aes128_task;
 typedef struct aes128_command aes128_command;
+typedef struct dma_ptr dma_ptr;
 
 typedef uint32_t aes_dma_addr_t;    /* Aes device supports 32-bit addresses. */
+
+struct dma_ptr
+{
+  char *k_ptr;                      /* Use char * for easy standard-conforming
+                                       pointer arithmetics.  */
+  aes_dma_addr_t d_ptr;
+};
 
 struct aes128_combo_buffer
 {
   size_t read_tail;         /* Start reading encrypted data here.  */
-  size_t write_tail;        /* Stop reading encrypted data before this.  */
+  size_t write_tail;        /* Stop reading encrypted data here.  */
+  size_t to_encrypt_tail;   /* Start making new task here.  */
   size_t write_head;        /* Append new data here.  */
-  char *k_data;             /* Kernel address space */
-  aes_dma_addr_t d_data;    /* DMA address space */
+  size_t read_count;
+  size_t write_count;
+  size_t to_encrypt_count;
+  dma_ptr data;
+  
+  struct mutex read_lock;   /* For read_tail and read_head.  */
+  struct mutex write_lock;  /* For write_head.  */
+  struct mutex common_lock;
+  
+  wait_queue_head_t read_queue;
+  wait_queue_head_t write_queue;
 };
+
+static int acb_init (aes128_combo_buffer *buffer, aes128_dev *aes_dev);
+static void acb_destroy (aes128_combo_buffer *buffer, aes128_dev *aes_dev);
+static size_t acb_read_count (const aes128_combo_buffer *buffer);
+static size_t acb_write_count (const aes128_combo_buffer *buffer);
+static size_t acb_free (const aes128_combo_buffer *buffer);
+static size_t acb_free_to_end (const aes128_combo_buffer *buffer);
+static size_t acb_read_count_to_end (const aes128_combo_buffer *buffer);
 
 struct aes128_block
 {
@@ -47,12 +74,10 @@ struct aes128_dev
   struct device *sys_dev;
   struct pci_dev *pci_dev;
 
-  aes128_command *k_cmd_buff_ptr;
-  aes_dma_addr_t d_cmd_buff_ptr;
+  dma_ptr cmd_buffer;
 
   spinlock_t lock;
   wait_queue_head_t command_queue;
-
   size_t tasks_in_progress;
 
   struct list_head context_list_head;
@@ -64,43 +89,20 @@ struct aes128_dev
 
 struct aes128_context
 {
-  AES_MODE mode;
-
   aes128_dev *aes_dev;
-
-  struct circ_buf write_buffer;
-  struct circ_buf read_buffer;
-
-  wait_queue_head_t read_queue;
-  wait_queue_head_t write_queue;
-
-  struct mutex read_lock;       /* Protect read buffer.  */
-  struct mutex write_lock;      /* Protect write buffer.  */
-
-  char file_open;               /* Is the file still open?  */
-  int cmds_in_progress;         /* How many commands are in device queue?  */
-  
-  unsigned int flags;           /* Passed to open.  */
-
+  aes128_combo_buffer buffer;
+  aes128_mode_t mode;
   struct list_head context_list;
-  struct list_head completed_list_head;
-
-  aes_dma_addr_t d_ks_ptr;      /* Key and state buffer.  */
-  aes128_block *k_ks_ptr;
-  
+  dma_ptr ks_buffer;                /* Key and state.  */
 };
 
 /* Complete set of information for one command.  */
 struct aes128_task
 {
-  uint32_t d_input_data_ptr;
-  aes_dma_addr_t d_output_data_ptr;
-  aes128_block *k_input_data_ptr;
-  aes128_block *k_output_data_ptr;
+  dma_ptr inout_buffer;
   size_t block_count;
   aes128_context *context;
   int cmd_index;
-  AES_MODE mode;
   struct list_head task_list;
 };
 
@@ -128,12 +130,5 @@ static long file_ioctl (struct file *f, unsigned int cmd, unsigned long arg);
 static int pci_probe (struct pci_dev *dev, const struct pci_device_id *id);
 static void pci_remove (struct pci_dev *dev);
 static void pci_shutdown (struct pci_dev *dev);
-
-/* Cyclic buffers */
-static size_t cbuf_cont (const struct circ_buf *buf);
-static size_t cbuf_free (const struct circ_buf *buf);
-static int cbuf_take (void *dest, struct circ_buf *buf, size_t len);
-static int cbuf_add_from_kernel (struct circ_buf *buf, const char *data, size_t len);
-static int cbuf_add_from_user (struct circ_buf *buf, const char __user *data, size_t len);
 
 #endif /* _AESDEV_H */

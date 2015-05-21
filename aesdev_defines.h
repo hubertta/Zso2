@@ -50,13 +50,13 @@
 #define AESDEV_BLOCK_XFER 0x40
 #define AESDEV_BLOCK_CMD 0x50
 
-#define AESDRV_IOBUFF_SIZE 0x1000
+#define AESDRV_IOBUFF_SIZE (0x100 * sizeof (aes128_block))
 #define AESDRV_CMDBUFF_SIZE (0x08 * sizeof (aes128_command))
 
 #define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
 #define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
 
-#define AESDEV_CMD_INDEXOF(begin, write) (((write) - (begin)) / 16)
+#define AESDEV_CMD_INDEXOF(begin, write) (((size_t)(write) - (size_t)(begin)) / 16)
 
 #define KDEBUG(msg, ...) do\
     {\
@@ -80,6 +80,8 @@ typedef enum
   AES_OFB = AESDEV_MODE_OFB,
   AES_CTR = AESDEV_MODE_CTR,
   AES_UNDEF = 0xFF
-} AES_MODE;
+} aes128_mode_t;
 
 #define HAS_STATE(mode) ((mode) != AES_ECB_ENCRYPT && mode != AES_ECB_DECRYPT)
+
+#define assert(b) if (!(b)) printk (KERN_WARNING "ASSERT FAILED: %s\n", #b)
