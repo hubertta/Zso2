@@ -79,6 +79,7 @@ struct aes128_dev
   spinlock_t lock;
   wait_queue_head_t command_queue;
   size_t tasks_in_progress;
+  size_t read_index;
 
   struct list_head context_list_head;
   struct list_head task_list_head;
@@ -104,6 +105,7 @@ struct aes128_task
   aes128_context *context;
   int cmd_index;
   struct list_head task_list;
+  aes_dma_addr_t write_ptr;
 };
 
 /* This is to reflect single entry in CMD block */

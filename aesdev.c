@@ -95,6 +95,7 @@ __move_completed_tasks (aes128_context *context)
 
     context->buffer.read_count += task->block_count * sizeof (aes128_block);
     context->buffer.write_count -= task->block_count * sizeof (aes128_block);
+    assert (context->buffer.write_count >= 0);
 
     assert (context->buffer.read_count > 0
             && context->buffer.read_count <= AESDRV_IOBUFF_SIZE);
@@ -127,7 +128,8 @@ move_completed_tasks (aes128_context *context)
 __must_check static size_t
 __free_task_slots (aes128_dev *aes_dev)
 {
-  return 7 - aes_dev->tasks_in_progress;
+  //  return AESDRV_IOBUFF_SIZE - 3 - aes_dev->tasks_in_progress;
+  return 3 - aes_dev->tasks_in_progress;
 }
 
 __must_check static size_t
@@ -490,6 +492,7 @@ irq_handler (int irq, void *ptr)
   aes128_task *task, *temp_task;
   uint8_t intr;
   unsigned long irq_flags;
+  char stoi = 0;
 
   DNOTIF_ENTER_FUN;
 
@@ -502,13 +505,28 @@ irq_handler (int irq, void *ptr)
   if (!intr)
     {
       spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
-      AESDEV_START (aes_dev);
       return IRQ_NONE;
     }
+  iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
+  if ((ioread32 (aes_dev->bar0 + AESDEV_STATUS) & 0x03) == 0x00)
+    stoi = 1;
+
+  aes_dev->read_index = AESDEV_CMD_INDEXOF (aes_dev->cmd_buffer.d_ptr, ioread32 (aes_dev->bar0 + AESDEV_CMD_READ_PTR));
+  assert (aes_dev->read_index < AESDRV_CMDBUFF_SLOTS);
 
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
+    KDEBUG ("intr=0x%02x read_ind=%x task->cmd_index=%x stoi=%x\n",
+            intr, aes_dev->read_index, task->cmd_index, stoi);
+    KDEBUG ("%d == %d?\n", ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS), aes_dev->read_index);
+    //    if (!stoi && ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS) == aes_dev->read_index)
+    //      {
+    //        assert (!((1 << task->cmd_index) & intr));
+    //        KDEBUG ("breaking\n");
+    //        break;
+    //      }
+    //    assert ((1 << task->cmd_index) & intr);
     if ((1 << task->cmd_index) & intr)
       {
         list_del (&task->task_list);
@@ -523,7 +541,7 @@ irq_handler (int irq, void *ptr)
   wake_up_interruptible (&aes_dev->command_queue);
 
   /* All interrupts handled.  */
-  iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
+  //  iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   /*** END CRITICAL SECTION ***/
@@ -538,7 +556,7 @@ static ssize_t
 file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 {
   aes128_context *context;
-  size_t to_copy, to_copy1, to_copy2;
+  size_t to_copy, to_copy1; //, to_copy2;
   ssize_t retval;
 
   DNOTIF_ENTER_FUN;
@@ -585,22 +603,24 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 
   to_copy = min (len, acb_read_count (&context->buffer));
   to_copy1 = min (to_copy, acb_read_count_to_end (&context->buffer));
-  to_copy2 = to_copy - to_copy1;
+  //  to_copy2 = to_copy - to_copy1;
   if (copy_to_user (buf, context->buffer.data.k_ptr + context->buffer.read_tail, to_copy1))
     {
       KDEBUG ("copy_to_user\n");
       retval = -EFAULT;
       goto exit;
     }
-  if (to_copy2 && copy_to_user (buf + to_copy1, context->buffer.data.k_ptr, to_copy2))
-    {
-      KDEBUG ("copy_to_user\n");
-      retval = -EFAULT;
-      goto exit;
-    }
-  context->buffer.read_tail += to_copy;
+  //  if (to_copy2 && copy_to_user (buf + to_copy1, context->buffer.data.k_ptr, to_copy2))
+  //    {
+  //      KDEBUG ("copy_to_user\n");
+  //      retval = -EFAULT;
+  //      goto exit;
+  //    }
+  context->buffer.read_tail += to_copy1;
   context->buffer.read_tail %= AESDRV_IOBUFF_SIZE;
-  context->buffer.read_count -= to_copy;
+  context->buffer.read_count -= to_copy1;
+  assert (context->buffer.read_count >= 0);
+  //  retval = to_copy;
   retval = to_copy;
   wake_up (&context->buffer.write_queue);
 
@@ -654,6 +674,8 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
           KDEBUG ("no space in buffer => sleep\n");
           mutex_unlock (&context->buffer.common_lock);
           _ret = wait_event_interruptible (context->buffer.write_queue, mut_acb_free (&context->buffer) != 0);
+          /* Mam cały czas muteksa na write; czyli nikt mi nie zajął miejsca
+             w buforze w tzw. międzyczasie.  */
           mutex_lock (&context->buffer.common_lock);
 
           if (_ret != 0)
@@ -726,6 +748,7 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   cmd->ks_ptr = context->ks_buffer.d_ptr;
   cmd->xfer_val = AESDEV_TASK (task->block_count,
                                1 << task->cmd_index,
+                               //                               0x01,
                                HAS_STATE (context->mode),
                                context->mode);
 
@@ -884,6 +907,7 @@ init_cmd_buffer (aes128_dev * aes_dev)
              bar0 + AESDEV_CMD_READ_PTR);
   iowrite32 ((uint32_t) aes_dev->cmd_buffer.d_ptr,
              bar0 + AESDEV_CMD_WRITE_PTR);
+  aes_dev->read_index = AESDRV_CMDBUFF_SIZE - 1;
   return 0;
 }
 
