@@ -3,10 +3,10 @@ KDIR = /home/hubert/mim/zso/linux-3.13.3
 CFLAGS += -Wall -m32
 LDFLAGS += -Wall -m32
 
-default: test1 test2 test3 test4 test5
+default: test1 test2 test3 test4 test5 test6
 	$(MAKE) -C $(KDIR) M=$$PWD
 	cp aesdev.ko ../../hshare/
-	cp test1 test2 test3 test4 test5 ../../hshare/
+	cp test1 test2 test3 test4 test5 test6 ../../hshare/
 	
 test4: test4.o
 	$(CC) $(LDFLAGS) $< -pthread -o $@

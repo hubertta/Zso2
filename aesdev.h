@@ -10,12 +10,12 @@
 #include <linux/circ_buf.h>
 #include <linux/wait.h>
 
-struct aes128_combo_buffer;     /* Buffer for read/write/encrypted data.  */
-struct aes128_block;            /* 16 bytes of data, used for both state,
+struct aes128_combo_buffer; /* Buffer for read/write/encrypted data.  */
+struct aes128_block; /* 16 bytes of data, used for both state,
                                    data and keys.  */
-struct aes128_dev;              /* Represents single aes device.  */
-struct aes128_context;          /* Corresponds to single struct file.  */
-struct aes128_command;          /* Represents one slot in dev's cmd buffer.  */
+struct aes128_dev; /* Represents single aes device.  */
+struct aes128_context; /* Corresponds to single struct file.  */
+struct aes128_command; /* Represents one slot in dev's cmd buffer.  */
 struct aes128_task;
 struct dma_ptr;
 
@@ -27,30 +27,30 @@ typedef struct aes128_task aes128_task;
 typedef struct aes128_command aes128_command;
 typedef struct dma_ptr dma_ptr;
 
-typedef uint32_t aes_dma_addr_t;    /* Aes device supports 32-bit addresses. */
+typedef uint32_t aes_dma_addr_t; /* Aes device supports 32-bit addresses. */
 
 struct dma_ptr
 {
-  char *k_ptr;                      /* Use char * for easy standard-conforming
+  char *k_ptr; /* Use char * for easy standard-conforming
                                        pointer arithmetics.  */
   aes_dma_addr_t d_ptr;
 };
 
 struct aes128_combo_buffer
 {
-  size_t read_tail;         /* Start reading encrypted data here.  */
-  size_t write_tail;        /* Stop reading encrypted data here.  */
-  size_t to_encrypt_tail;   /* Start making new task here.  */
-  size_t write_head;        /* Append new data here.  */
+  size_t read_tail; /* Start reading encrypted data here.  */
+  size_t write_tail; /* Stop reading encrypted data here.  */
+  size_t to_encrypt_tail; /* Start making new task here.  */
+  size_t write_head; /* Append new data here.  */
   size_t read_count;
   size_t write_count;
   size_t to_encrypt_count;
   dma_ptr data;
-  
-  struct mutex read_lock;   /* For read_tail and read_head.  */
-  struct mutex write_lock;  /* For write_head.  */
+
+  struct mutex read_lock; /* For read_tail and read_head.  */
+  struct mutex write_lock; /* For write_head.  */
   struct mutex common_lock;
-  
+
   wait_queue_head_t read_queue;
   wait_queue_head_t write_queue;
 };
@@ -61,7 +61,8 @@ static size_t acb_read_count (const aes128_combo_buffer *buffer);
 static size_t acb_write_count (const aes128_combo_buffer *buffer);
 static size_t acb_free (const aes128_combo_buffer *buffer);
 static size_t acb_free_to_end (const aes128_combo_buffer *buffer);
-static size_t acb_read_count_to_end (const aes128_combo_buffer *buffer);
+static size_t
+acb_read_count_to_end (const aes128_combo_buffer *buffer);
 
 struct aes128_block
 {
@@ -79,12 +80,10 @@ struct aes128_dev
   spinlock_t lock;
   wait_queue_head_t command_queue;
   size_t tasks_in_progress;
-  size_t read_index;
 
-  struct list_head context_list_head;
   struct list_head task_list_head;
   struct list_head completed_list_head;
-  
+
   int minor;
 };
 
@@ -92,9 +91,10 @@ struct aes128_context
 {
   aes128_dev *aes_dev;
   aes128_combo_buffer buffer;
-  aes128_mode_t mode;
-  struct list_head context_list;
-  dma_ptr ks_buffer;                /* Key and state.  */
+  int mode;
+  dma_ptr ks_buffer; /* Key and state.  */
+  size_t tasks_in_progress; /* Used in file_release to wait for
+                                       completion of all tasks.  */
 };
 
 /* Complete set of information for one command.  */
