@@ -549,10 +549,10 @@ main ()
   open_file ();
 
   test_ecb ();
-  test_cbc ();
-  test_cfb ();
-  test_ofb ();
-  test_ctr ();
+//  test_cbc ();
+//  test_cfb ();
+//  test_ofb ();
+//  test_ctr ();
 
   close (fd);
 

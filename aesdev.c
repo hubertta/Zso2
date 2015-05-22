@@ -97,7 +97,7 @@ __move_completed_tasks (aes128_context *context)
 
   list_for_each_entry_safe (task, temp_task, &my_tasks, task_list)
   {
-    KDEBUG ("moving task %p\n", task);
+    KDEBUG ("moving task %p at %d\n", task, task->cmd_index);
 
     context->buffer.write_tail += task->block_count * sizeof (aes128_block);
     context->buffer.write_tail %= AESDRV_IOBUFF_SIZE;
@@ -123,15 +123,12 @@ __move_completed_tasks (aes128_context *context)
   return acb_read_count (&context->buffer);
 }
 
-static ssize_t
+static size_t
 move_completed_tasks (aes128_context *context)
 {
-  ssize_t ret;
-  /* TODO interruptible.  */
-  ret = mutex_lock_interruptible (&context->buffer.common_lock);
-  if (ret != 0)
-    return ret;
-
+  size_t ret;
+  might_sleep ();
+  mutex_lock (&context->buffer.common_lock);
   ret = __move_completed_tasks (context);
   mutex_unlock (&context->buffer.common_lock);
   return ret;
@@ -141,7 +138,7 @@ move_completed_tasks (aes128_context *context)
 __must_check static size_t
 __free_task_slots (aes128_dev *aes_dev)
 {
-  return AESDRV_CMDBUFF_SLOTS - aes_dev->tasks_in_progress - 1;
+  return AESDRV_CMDBUFF_SLOTS - aes_dev->tasks_in_progress - 2;
 }
 
 __must_check static size_t
@@ -217,26 +214,21 @@ __context_busy (aes128_context *context)
 {
   DNOTIF_ENTER_FUN;
   __move_completed_tasks (context);
-  KDEBUG ("returning %zu\n", context->buffer.write_count - context->buffer.to_encrypt_count);
+  KDEBUG ("returning %zu write=%d toenc=%d read=%d\n", context->buffer.write_count - context->buffer.to_encrypt_count,
+          context->buffer.write_count, context->buffer.to_encrypt_count, context->buffer.read_count);
   DNOTIF_LEAVE_FUN;
   /* How many bytes are currently being encrypted at the device?  */
   return context->buffer.write_count - context->buffer.to_encrypt_count;
 }
 
-__must_check static ssize_t
+__must_check static size_t
 context_busy (aes128_context *context)
 {
-  ssize_t ret;
-
+  size_t ret;
   DNOTIF_ENTER_FUN;
   might_sleep ();
-
-  ret = mutex_lock_interruptible (&context->buffer.common_lock);
-  if (ret != 0)
-    return ret;
-
+  mutex_lock (&context->buffer.common_lock);  
   ret = __context_busy (context);
-
   mutex_unlock (&context->buffer.common_lock);
   DNOTIF_LEAVE_FUN;
   return ret;
@@ -330,14 +322,11 @@ acb_free (const aes128_combo_buffer *buffer)
   return AESDRV_IOBUFF_SIZE - buffer->write_count - buffer->read_count;
 }
 
-__must_check static ssize_t
+__must_check static size_t
 mut_acb_free (aes128_combo_buffer *buffer)
 {
-  ssize_t ret;
-  ret = mutex_lock_interruptible (&buffer->common_lock);
-  if (ret != 0)
-    return ret;
-
+  size_t ret;
+  mutex_lock (&buffer->common_lock);
   ret = acb_free (buffer);
   mutex_unlock (&buffer->common_lock);
   return ret;
@@ -422,12 +411,14 @@ irq_handler (int irq, void *ptr)
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
+    KDEBUG ("checking task %p at %d, read=%d running=%d\n", task, task->cmd_index, read_index, dev_running);
     /* Is this task completed?
        If the device is not running, it means that all tasks have been
-       completed. If it is still running, I assume the task pointed by
-       read_ptr to be not finished - I will handle it in next interrupt.  */
+       completed. Otherwise I keep iterating until I see uncompleted task.  */
     if (dev_running &&
-        ((task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS) == read_index)
+        (task->cmd_index == read_index ||
+         (task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS == read_index))
+      //      if (!(1 << task->cmd_index & intr))
       break;
 
     list_del (&task->task_list);
@@ -439,7 +430,7 @@ irq_handler (int irq, void *ptr)
 
   /* It was "my" interrupt, so at least one command has completed.
      Therefore, notify processes waiting for a slot in command queue.  */
-  wake_up_interruptible (&aes_dev->command_queue);
+  wake_up (&aes_dev->command_queue);
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   /*** END CRITICAL SECTION ***/
@@ -573,7 +564,7 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 
   /* Some space in io buffer was freed, perhaps someone is willing to
      write.  */
-  wake_up_interruptible (&context->buffer.write_queue);
+  wake_up (&context->buffer.write_queue);
 
   retval = to_copy;
 
@@ -736,22 +727,14 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
   /*** CRITICAL SECTION ***/
   spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
-  /* Wait for space in command buffer.  */
+  /* Wait for space in command buffer.
+     This wait will not take too long, so skip NONBLOCK support here.  */
   while (__free_task_slots (context->aes_dev) < 1)
     {
-      int _ret_queue;
-
-      /* TODO Handle O_NONBLOCK.  */
-
       spin_unlock_irqrestore (&context->aes_dev->lock, irq_flags);
 
-      _ret_queue = wait_event_interruptible (context->aes_dev->command_queue,
-                                             free_task_slots (context->aes_dev) >= 1);
-      if (_ret_queue != 0)
-        {
-          retval = _ret_queue;
-          goto exit;
-        }
+      wait_event (context->aes_dev->command_queue,
+                  free_task_slots (context->aes_dev) >= 1);
 
       assert (context->mode != AESDEV_MODE_CLOSING);
 
@@ -762,6 +745,13 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
   cmd_ptr.d_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
   cmd_ptr.k_ptr = aes_dev->cmd_buffer.k_ptr + (cmd_ptr.d_ptr - aes_dev->cmd_buffer.d_ptr);
+  {
+    uint32_t read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
+    uint32_t write_ptr = cmd_ptr.d_ptr;
+    assert (write_ptr + sizeof (aes128_command) != read_ptr);
+    if (write_ptr + sizeof (aes128_command) % AESDRV_CMDBUFF_SIZE == read_ptr)
+      printk (KERN_WARNING "write=%d read=%d\n", write_ptr, read_ptr);
+  }
 
   task->cmd_index = AESDEV_CMD_INDEXOF (aes_dev->cmd_buffer.d_ptr, cmd_ptr.d_ptr);
 
@@ -918,7 +908,7 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
 
   if (context->mode == AESDEV_MODE_CLOSING)
     {
-      retval =-EBADFD;
+      retval = -EBADFD;
       goto exit;
     }
 
@@ -1167,8 +1157,6 @@ pci_remove (struct pci_dev * pci_dev)
 
   aes_devs[aes_dev->minor] = NULL;
   kfree (aes_dev);
-
-  /* TODO weź spinlocka, przeiteruj po kontekstach i pozamykaj je.  */
 
   printk (KERN_WARNING "Unregistered aesdev\n");
   DNOTIF_LEAVE_FUN;

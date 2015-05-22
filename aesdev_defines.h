@@ -53,7 +53,7 @@
 #define AESDEV_BLOCK_CMD 0x50
 
 #define AESDRV_IOBUFF_SIZE (0x100 * sizeof (aes128_block))
-#define AESDRV_CMDBUFF_SLOTS (0x100)
+#define AESDRV_CMDBUFF_SLOTS (0x40)
 #define AESDRV_CMDBUFF_SIZE (AESDRV_CMDBUFF_SLOTS * sizeof (aes128_command))
 #define AESDRV_MAX_DEV_COUNT 0xFF
 
