@@ -145,15 +145,38 @@ test_ecb_long ()
   fprintf (stderr, "ECB long written\n");
 }
 
+void
+test_null ()
+{
+  const char *key = "\x2b\x7e\x15\x16\x28\xae\xd2\xa6\xab\xf7\x15\x88\x09\xcf\x4f\x3c";
+  char *all_text;
+  const int length = 0x1000;
+
+  set_mode (AESDEV_IOCTL_SET_ECB_ENCRYPT, key);
+
+  all_text = malloc (length);
+  free (all_text);
+  all_text = (void *) ((size_t) all_text * 2);
+
+  /*** Test 1 ***/
+  do_write (fd, all_text, length);
+  fprintf (stderr, "ECB long written\n");
+}
+
 /*****************************************************************************/
 
 int
 main ()
 {
   open_file ();
-
   test_ecb_long ();
+  close (fd);
 
+  open_file ();
+  test_null ();
+  
+  fprintf (stderr, "closing\n");
+  
   close (fd);
 
   return (EXIT_SUCCESS);

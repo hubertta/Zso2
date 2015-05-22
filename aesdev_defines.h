@@ -37,6 +37,7 @@
 #define AESDEV_MODE_OFB     6
 #define AESDEV_MODE_CTR     7
 #define AESDEV_MODE_UNDEF 8
+#define AESDEV_MODE_CLOSING 9
 
 #define AESDEV_CMD_BEGIN_PTR    0x050
 #define AESDEV_CMD_END_PTR    0x054
@@ -61,11 +62,14 @@
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((size_t)(write) - (size_t)(begin)) / 16)
 
+#if 0
 #define KDEBUG(msg, ...) do\
     {\
         printk(KERN_WARNING "%s: " msg, __func__, ##__VA_ARGS__);\
     } while (0)
-//#define KDEBUG(...)
+#else
+#define KDEBUG(...)
+#endif
 
 #define DNOTIF_ENTER_FUN KDEBUG ("entering\n")
 #define DNOTIF_LEAVE_FUN KDEBUG ("leaving\n")

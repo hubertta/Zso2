@@ -93,8 +93,6 @@ struct aes128_context
   aes128_combo_buffer buffer;
   int mode;
   dma_ptr ks_buffer; /* Key and state.  */
-  size_t tasks_in_progress; /* Used in file_release to wait for
-                                       completion of all tasks.  */
 };
 
 /* Complete set of information for one command.  */
