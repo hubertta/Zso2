@@ -29,6 +29,10 @@ static aes128_dev *aes_devs[AESDRV_MAX_DEV_COUNT]; /* Map minor number to device
    deleted and then to acquire context-related mutex.  */
 DEFINE_MUTEX (context_erase_mutex);
 
+/* This mutex is used to atomically remove a device and to atomically check
+   that a device exits.  */
+DEFINE_MUTEX (dev_remove_mutex);
+
 /*** Kernel structs **********************************************************/
 const static struct file_operations aes_fops = {
   .owner = THIS_MODULE,
@@ -197,6 +201,9 @@ context_init (aes128_context *context, aes128_dev *aes_dev)
       return -ENOMEM;
     }
 
+  INIT_LIST_HEAD (&context->lf.file_list);
+  list_add_tail (&context->lf.file_list, &aes_dev->file_list_head);
+
   return 0;
   DNOTIF_LEAVE_FUN;
 }
@@ -213,6 +220,10 @@ context_destroy (aes128_context *context)
                      context->ks_buffer.d_ptr);
 
   acb_destroy (&context->buffer, context->aes_dev);
+
+  mutex_lock (&dev_remove_mutex);
+  list_del (&context->lf.file_list);
+  mutex_unlock (&dev_remove_mutex);
 
   /* TODO remove line below.  */
   memset (context, 0, sizeof (aes128_context));
@@ -536,8 +547,6 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
               return _ret_queue;
             }
 
-          assert (context->mode != AESDEV_MODE_CLOSING);
-
           _ret_mutex = mutex_lock_interruptible (&context->buffer.common_lock);
           if (_ret_mutex != 0)
             {
@@ -547,6 +556,7 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 
           if (context->mode == AESDEV_MODE_CLOSING)
             {
+              KDEBUG ("closing in read\n");
               retval = -EBADFD;
               goto exit;
             }
@@ -679,8 +689,6 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
               return _ret_queue;
             }
 
-          assert (context->mode != AESDEV_MODE_CLOSING);
-
           _ret_mutex = mutex_lock_interruptible (&context->buffer.common_lock);
           if (_ret_mutex != 0)
             {
@@ -690,6 +698,7 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
           if (context->mode == AESDEV_MODE_CLOSING)
             {
+              KDEBUG ("closing in write\n");
               retval = -EBADFD;
               goto exit;
             }
@@ -817,31 +826,50 @@ exit:
 static int
 file_open (struct inode *i, struct file * f)
 {
+  aes128_dev *aes_dev;
   aes128_context *context;
-  int ret;
+  int retval;
 
   DNOTIF_ENTER_FUN;
   might_sleep ();
+
+  retval = mutex_lock_interruptible (&dev_remove_mutex);
+  if (retval != 0)
+    return retval;
+
+  aes_dev = aes_devs[iminor (i)];
+  if (aes_dev == NULL)
+    {
+      retval = -EBADFD;
+      goto exit;
+    }
 
   context = kmalloc (sizeof (aes128_context), GFP_KERNEL);
   if (context == NULL)
     {
       printk (KERN_WARNING "cannot allocate memory for context\n");
-      return -ENOMEM;
+      retval = -ENOMEM;
+      goto exit;
     }
 
-  ret = context_init (context, aes_devs[iminor (i)]);
-  if (IS_ERR_VALUE (ret))
+  retval = context_init (context, aes_devs[iminor (i)]);
+  if (IS_ERR_VALUE (retval))
     {
+      kfree (context);
       printk (KERN_WARNING "context_init\n");
-      return ret;
+      goto exit;
     }
+
   f->private_data = context;
+  context->lf.f = f;
 
   KDEBUG ("assigned opened file to device %p at context %p\n", context->aes_dev, context);
 
+  retval = 0;
+exit:
+  mutex_unlock (&dev_remove_mutex);
   DNOTIF_LEAVE_FUN;
-  return 0;
+  return retval;
 }
 
 static int
@@ -1016,7 +1044,7 @@ exit:
 
 /*** Device procedures *******************************************************/
 __must_check static int
-init_cmd_buffer (aes128_dev * aes_dev)
+cmd_buffer_init (aes128_dev *aes_dev)
 {
   void __iomem *bar0;
   dma_addr_t tmp_dma_addr;
@@ -1044,21 +1072,25 @@ init_cmd_buffer (aes128_dev * aes_dev)
              bar0 + AESDEV_CMD_WRITE_PTR);
   return 0;
 }
+
+static void
+cmd_buffer_destroy (aes128_dev *aes_dev)
+{
+  might_sleep ();
+  dma_free_coherent (&aes_dev->pci_dev->dev, AESDRV_CMDBUFF_SIZE,
+                     aes_dev->cmd_buffer.k_ptr, aes_dev->cmd_buffer.d_ptr);
+}
 /*****************************************************************************/
 
 /*** PCI handlers ************************************************************/
-static inline void
-turn_off_device (aes128_dev * aes_dev)
-{
-  AESDEV_STOP (aes_dev);
-}
-
 static int
 pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
 {
   aes128_dev *aes_dev;
   uint32_t intr;
   int minor, ret;
+  void __iomem *ioptr;
+  struct device *sys_dev;
 
   DNOTIF_ENTER_FUN;
   might_sleep ();
@@ -1081,6 +1113,7 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
   ret = pci_request_regions (pci_dev, "aesdev");
   if (IS_ERR_VALUE (ret))
     {
+      pci_disable_device (pci_dev);
       printk (KERN_WARNING "pci_request_regions\n");
       return ret;
     }
@@ -1088,8 +1121,11 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
   /* Initialize new aes128_device structure.  */
   aes_dev = kmalloc (sizeof (aes128_dev), GFP_KERNEL);
   if (aes_dev == NULL)
-    return -ENOMEM;
-
+    {
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
+      return -ENOMEM;
+    }
   memset (aes_dev, 0, sizeof (aes128_dev));
 
   spin_lock_init (&aes_dev->lock);
@@ -1097,38 +1133,52 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
 
   INIT_LIST_HEAD (&aes_dev->task_list_head);
   INIT_LIST_HEAD (&aes_dev->completed_list_head);
+  INIT_LIST_HEAD (&aes_dev->file_list_head);
 
   aes_dev->pci_dev = pci_dev;
   aes_dev->minor = minor;
 
-  aes_dev->bar0 = pci_iomap (pci_dev, 0, 0);
-  if (IS_ERR_OR_NULL (aes_dev->bar0))
+  ioptr = pci_iomap (pci_dev, 0, 0);
+  if (IS_ERR_OR_NULL (ioptr))
     {
       printk (KERN_WARNING "pci_iomap\n");
-      return PTR_ERR (aes_dev->bar0);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
+      if (ioptr)
+        return PTR_ERR (ioptr);
+      else
+        return -EIO;
     }
+  aes_dev->bar0 = ioptr;
 
-  aes_dev->sys_dev = device_create (dev_class, NULL, MKDEV (major, minor), NULL, "aes%d", minor);
-  if (IS_ERR_OR_NULL (aes_dev->sys_dev))
-    {
-      printk (KERN_WARNING "device_create\n");
-      return PTR_ERR (aes_dev->sys_dev);
-    }
-
+  /* These are fail-safe.  */
   pci_set_drvdata (pci_dev, aes_dev);
   pci_set_master (pci_dev);
 
+  /* No cleanup needed for this function.  */
   ret = pci_set_dma_mask (pci_dev, DMA_BIT_MASK (32));
   if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "pci_set_dma_mask\n");
+      pci_clear_master (pci_dev);
+      pci_iounmap (pci_dev, ioptr);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
       return ret;
     }
 
+  /* No cleanup needed for this function.  */
   ret = pci_set_consistent_dma_mask (pci_dev, DMA_BIT_MASK (32));
   if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "pci_set_consistent_dma_mask\n");
+      pci_clear_master (pci_dev);
+      pci_iounmap (pci_dev, ioptr);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
       return ret;
     }
 
@@ -1136,30 +1186,65 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
   if (IS_ERR_VALUE (ret))
     {
       printk (KERN_WARNING "request_irq\n");
+      pci_clear_master (pci_dev);
+      pci_iounmap (pci_dev, ioptr);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
       return ret;
     }
 
-  /* Wyzeruj blok transferu danych */
+  /* Init data transfer block.  */
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_IN_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_OUT_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_STATE_PTR);
   iowrite32 (0x00000000, aes_dev->bar0 + AESDEV_XFER_TASK);
 
-  if (init_cmd_buffer (aes_dev))
-    panic ("init_cmd_buffer");
+  /* Init command buffer.  */
+  ret = cmd_buffer_init (aes_dev);
+  if (IS_ERR_VALUE (ret))
+    {
+      printk (KERN_WARNING "cmd_buffer_init\n");
+      free_irq (pci_dev->irq, aes_dev);
+      pci_clear_master (pci_dev);
+      pci_iounmap (pci_dev, ioptr);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
+      return ret;
+    }
 
-  /* Skasuj ewentualne przerwania */
+  /* Clear interrupts.  */
   intr = ioread32 (aes_dev->bar0 + AESDEV_INTR);
   iowrite32 (intr, aes_dev->bar0 + AESDEV_INTR);
 
-  /* Włącz przerwania */
+  /* Enable interrupts.  */
   iowrite32 (0xFF, aes_dev->bar0 + AESDEV_INTR_ENABLE);
 
-  /* Zarejestruj urządzenie w sterowniku */
+  /* Register device in driver.  */
   aes_devs[minor] = aes_dev;
 
-  /* Startujemy */
+  /* Start device.  */
   AESDEV_START (aes_dev);
+
+  /* Do this at the very end. Since now, the device is available to user.  */
+  sys_dev = device_create (dev_class, NULL, MKDEV (major, minor), NULL, "aes%d", minor);
+  if (IS_ERR_OR_NULL (sys_dev))
+    {
+      printk (KERN_WARNING "device_create\n");
+      cmd_buffer_destroy (aes_dev);
+      free_irq (pci_dev->irq, aes_dev);
+      pci_clear_master (pci_dev);
+      pci_iounmap (pci_dev, ioptr);
+      kfree (aes_dev);
+      pci_release_regions (pci_dev);
+      pci_disable_device (pci_dev);
+      if (sys_dev)
+        return PTR_ERR (sys_dev);
+      else
+        return -EIO;
+    }
+  aes_dev->sys_dev = sys_dev;
 
   printk (KERN_WARNING "Registered new aesdev\n");
   DNOTIF_LEAVE_FUN;
@@ -1167,7 +1252,7 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
 }
 
 static void
-pci_remove (struct pci_dev * pci_dev)
+pci_remove (struct pci_dev *pci_dev)
 {
   aes128_dev *aes_dev;
 
@@ -1175,13 +1260,21 @@ pci_remove (struct pci_dev * pci_dev)
   might_sleep ();
 
   aes_dev = pci_get_drvdata (pci_dev);
+
+  mutex_lock (&dev_remove_mutex);
+  aes_devs[aes_dev->minor] = NULL;
+  if (!list_empty (&aes_dev->file_list_head))
+    panic ("aesdev: Hot-unplug with open contexts not supported! Fatal.\n");
+  mutex_unlock (&dev_remove_mutex);
+
+  device_destroy (dev_class, MKDEV (major, aes_dev->minor));
   free_irq (pci_dev->irq, aes_dev);
+  cmd_buffer_destroy (aes_dev);
   pci_clear_master (pci_dev);
   pci_iounmap (pci_dev, aes_dev->bar0);
+
   pci_release_regions (pci_dev);
   pci_disable_device (pci_dev);
-
-  aes_devs[aes_dev->minor] = NULL;
   kfree (aes_dev);
 
   printk (KERN_WARNING "Unregistered aesdev\n");
@@ -1189,11 +1282,13 @@ pci_remove (struct pci_dev * pci_dev)
 }
 
 static void
-pci_shutdown (struct pci_dev * dev)
+pci_shutdown (struct pci_dev *dev)
 {
+  aes128_dev *aes_dev;
   DNOTIF_ENTER_FUN;
   might_sleep ();
-  turn_off_device (pci_get_drvdata (dev));
+  aes_dev = pci_get_drvdata (dev);
+  AESDEV_STOP (aes_dev);
   DNOTIF_LEAVE_FUN;
 }
 
@@ -1219,7 +1314,10 @@ aesdrv_init (void)
   if (IS_ERR_OR_NULL (dev_class))
     {
       printk (KERN_WARNING "class_create\n");
-      return PTR_ERR (dev_class);
+      if (dev_class)
+        return PTR_ERR (dev_class);
+      else
+        return -EIO;
     }
 
   /* Register PCI driver.  */
@@ -1236,19 +1334,13 @@ aesdrv_init (void)
 static void
 aesdrv_cleanup (void)
 {
-  int i;
-
   DNOTIF_ENTER_FUN;
   might_sleep ();
 
-  for (i = 0; i < AESDRV_MAX_DEV_COUNT; ++i)
-    if (aes_devs[i] != NULL)
-      {
-        turn_off_device (aes_devs[i]);
-        device_destroy (dev_class, MKDEV (major, i));
-      }
-  class_destroy (dev_class);
+  /* This will fire all device destructors.  */
   pci_unregister_driver (&aes_pci);
+  class_destroy (dev_class);
+  unregister_chrdev (major, "aesdev");
 
   DNOTIF_LEAVE_FUN;
 }

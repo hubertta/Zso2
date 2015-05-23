@@ -18,6 +18,7 @@ struct aes128_context; /* Corresponds to single struct file.  */
 struct aes128_command; /* Represents one slot in dev's cmd buffer.  */
 struct aes128_task;
 struct dma_ptr;
+struct listed_file;
 
 typedef struct aes128_combo_buffer aes128_combo_buffer;
 typedef struct aes128_block aes128_block;
@@ -26,6 +27,7 @@ typedef struct aes128_context aes128_context;
 typedef struct aes128_task aes128_task;
 typedef struct aes128_command aes128_command;
 typedef struct dma_ptr dma_ptr;
+typedef struct listed_file listed_file;
 
 typedef uint32_t aes_dma_addr_t; /* Aes device supports 32-bit addresses. */
 
@@ -69,6 +71,12 @@ struct aes128_block
   uint8_t state[AESDEV_AES_BLOCK_SIZE];
 };
 
+struct listed_file
+{
+  struct list_head file_list;
+  struct file *f;
+};
+
 struct aes128_dev
 {
   void __iomem *bar0;
@@ -83,6 +91,7 @@ struct aes128_dev
 
   struct list_head task_list_head;
   struct list_head completed_list_head;
+  struct list_head file_list_head;
 
   int minor;
 };
@@ -93,6 +102,7 @@ struct aes128_context
   aes128_combo_buffer buffer;
   int mode;
   dma_ptr ks_buffer; /* Key and state.  */
+  listed_file lf;
 };
 
 /* Complete set of information for one command.  */
