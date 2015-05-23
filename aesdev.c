@@ -154,6 +154,16 @@ free_task_slots (aes128_dev *aes_dev)
 
   return ret;
 }
+
+__must_check static int
+mut_mode (aes128_context *context)
+{
+  int retval;
+  mutex_lock (&context->buffer.common_lock);
+  retval = context->mode;
+  mutex_unlock (&context->buffer.common_lock);
+  return retval;
+}
 /*****************************************************************************/
 
 /*** AES context *************************************************************/
@@ -227,7 +237,7 @@ context_busy (aes128_context *context)
   size_t ret;
   DNOTIF_ENTER_FUN;
   might_sleep ();
-  mutex_lock (&context->buffer.common_lock);  
+  mutex_lock (&context->buffer.common_lock);
   ret = __context_busy (context);
   mutex_unlock (&context->buffer.common_lock);
   DNOTIF_LEAVE_FUN;
@@ -518,7 +528,8 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
              other process enter read procedure (do not unlock read_lock).  */
           mutex_unlock (&context->buffer.common_lock);
 
-          _ret_queue = wait_event_interruptible (context->buffer.read_queue, move_completed_tasks (context) != 0);
+          _ret_queue = wait_event_interruptible (context->buffer.read_queue, move_completed_tasks (context) != 0
+                                                 || mut_mode (context) == AESDEV_MODE_CLOSING);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.read_lock);
@@ -532,6 +543,12 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
             {
               mutex_unlock (&context->buffer.read_lock);
               return _ret_mutex;
+            }
+
+          if (context->mode == AESDEV_MODE_CLOSING)
+            {
+              retval = -EBADFD;
+              goto exit;
             }
         }
     }
@@ -654,7 +671,8 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
           mutex_unlock (&context->buffer.common_lock);
 
-          _ret_queue = wait_event_interruptible (context->buffer.write_queue, mut_acb_free (&context->buffer) > 0);
+          _ret_queue = wait_event_interruptible (context->buffer.write_queue, mut_acb_free (&context->buffer) > 0
+                                                 || mut_mode (context) == AESDEV_MODE_CLOSING);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.write_lock);
@@ -668,6 +686,12 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
             {
               mutex_unlock (&context->buffer.write_lock);
               return _ret_mutex;
+            }
+
+          if (context->mode == AESDEV_MODE_CLOSING)
+            {
+              retval = -EBADFD;
+              goto exit;
             }
         }
     }
@@ -837,14 +861,23 @@ file_release (struct inode *i, struct file * f)
       return -EBADFD;
     }
 
-  /* No one read or write after this point.  */
-  mutex_lock (&context->buffer.write_lock);
-  mutex_lock (&context->buffer.read_lock);
   mutex_lock (&context->buffer.common_lock);
+  context->mode = AESDEV_MODE_CLOSING;
+  mutex_unlock (&context->buffer.common_lock);
 
   /* Remember that this context is destroyed, in case someone enter
      read/write function, but has not acquired a mutex yet.  */
   f->private_data = NULL;
+
+  /* Exit all current reads and writes (to avoid deadlock).  */
+  wake_up (&context->buffer.write_queue);
+  wake_up (&context->buffer.read_queue);
+
+  mutex_lock (&context->buffer.write_lock);
+  mutex_lock (&context->buffer.read_lock);
+  mutex_lock (&context->buffer.common_lock);
+
+  /* No one read/write/ioctl after this point.  */
 
   mutex_unlock (&context_erase_mutex);
 
@@ -852,16 +885,11 @@ file_release (struct inode *i, struct file * f)
   while (__context_busy (context))
     {
       mutex_unlock (&context->buffer.common_lock);
-
-      /* If tasks were completed, I will check if all of them.  */
       wait_event (context->buffer.read_queue, context_busy (context) == 0);
-      assert (context->mode != AESDEV_MODE_CLOSING);
-
       mutex_lock (&context->buffer.common_lock);
     }
 
-  context->mode = AESDEV_MODE_CLOSING;
-
+  /* Now it is safe to actually destroy the context.  */
   mutex_unlock (&context->buffer.common_lock);
   mutex_unlock (&context->buffer.read_lock);
   mutex_unlock (&context->buffer.write_lock);
@@ -1034,8 +1062,6 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
 
   DNOTIF_ENTER_FUN;
   might_sleep ();
-
-  /* TODO cleanup on failure.  */
 
   /* Find free slot for new device.  */
   for (minor = 0; minor < AESDRV_MAX_DEV_COUNT; ++minor)

@@ -62,7 +62,7 @@
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((size_t)(write) - (size_t)(begin)) / 16)
 
-#if 0
+#if 1
 #define KDEBUG(msg, ...) do\
     {\
         printk(KERN_WARNING "%s: " msg, __func__, ##__VA_ARGS__);\
