@@ -85,7 +85,10 @@ __move_completed_tasks (aes128_context *context)
   /*** CRITICAL SECTION ****/
   spin_lock_irqsave (&context->aes_dev->lock, flags);
 
-  list_for_each_entry_safe (task, temp_task, &context->aes_dev->completed_list_head, task_list)
+  list_for_each_entry_safe (task,
+                            temp_task,
+                            &context->aes_dev->completed_list_head,
+                            task_list)
   {
     /* Move my tasks to my list.  */
     if (task->context == context)
@@ -141,6 +144,7 @@ move_completed_tasks (aes128_context *context)
 __must_check static size_t
 __free_task_slots (aes128_dev *aes_dev)
 {
+  /* I need at least 2 free slots to distinguish all possible situations.  */
   return AESDRV_CMDBUFF_SLOTS - aes_dev->tasks_in_progress - 2;
 }
 
@@ -231,8 +235,11 @@ __context_busy (aes128_context *context)
 {
   DNOTIF_ENTER_FUN;
   __move_completed_tasks (context);
-  KDEBUG ("returning %zu write=%d toenc=%d read=%d\n", context->buffer.write_count - context->buffer.to_encrypt_count,
-          context->buffer.write_count, context->buffer.to_encrypt_count, context->buffer.read_count);
+  KDEBUG ("returning %zu write=%d toenc=%d read=%d\n",
+          context->buffer.write_count - context->buffer.to_encrypt_count,
+          context->buffer.write_count,
+          context->buffer.to_encrypt_count,
+          context->buffer.read_count);
   DNOTIF_LEAVE_FUN;
   /* How many bytes are currently being encrypted at the device?  */
   return context->buffer.write_count - context->buffer.to_encrypt_count;
@@ -413,7 +420,10 @@ irq_handler (int irq, void *ptr)
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
-    KDEBUG ("checking task %p at %d, read=%d running=%d\n", task, task->cmd_index, read_index, dev_running);
+    KDEBUG ("checking task %p at %d, read=%d running=%d\n",
+            task, task->cmd_index,
+            read_index,
+            dev_running);
     /* Is this task completed?
        If the device is not running, it means that all tasks have been
        completed. Otherwise I keep iterating until I see uncompleted task.  */
@@ -520,8 +530,10 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
              other process enter read procedure (do not unlock read_lock).  */
           mutex_unlock (&context->buffer.common_lock);
 
-          _ret_queue = wait_event_interruptible (context->buffer.read_queue, move_completed_tasks (context) != 0
-                                                 || mut_mode (context) == AESDEV_MODE_CLOSING);
+          _ret_queue =
+                  wait_event_interruptible (context->buffer.read_queue,
+                                            move_completed_tasks (context) != 0 ||
+                                            mut_mode (context) == AESDEV_MODE_CLOSING);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.read_lock);
@@ -551,13 +563,17 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
   to_copy1 = min (to_copy, acb_read_count_to_end (&context->buffer));
   to_copy2 = to_copy - to_copy1;
 
-  if (copy_to_user (buf, context->buffer.data.k_ptr + context->buffer.read_tail, to_copy1))
+  if (copy_to_user (buf,
+                    context->buffer.data.k_ptr + context->buffer.read_tail,
+                    to_copy1))
     {
       KDEBUG ("copy_to_user (1)\n");
       retval = -EFAULT;
       goto exit;
     }
-  if (to_copy2 && copy_to_user (buf + to_copy1, context->buffer.data.k_ptr, to_copy2))
+  if (to_copy2 && copy_to_user (buf + to_copy1,
+                                context->buffer.data.k_ptr,
+                                to_copy2))
     {
       KDEBUG ("copy_to_user (2)\n");
       retval = -EFAULT;
@@ -662,8 +678,10 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
           mutex_unlock (&context->buffer.common_lock);
 
-          _ret_queue = wait_event_interruptible (context->buffer.write_queue, mut_acb_free (&context->buffer) > 0
-                                                 || mut_mode (context) == AESDEV_MODE_CLOSING);
+          _ret_queue =
+                  wait_event_interruptible (context->buffer.write_queue,
+                                            mut_acb_free (&context->buffer) > 0 ||
+                                            mut_mode (context) == AESDEV_MODE_CLOSING);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.write_lock);
@@ -726,11 +744,14 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
   task_init (task);
   task->context = context;
-  task->block_count = acb_to_encrypt_count_to_end (&context->buffer) / sizeof (aes128_block);
+  task->block_count =
+          acb_to_encrypt_count_to_end (&context->buffer) / sizeof (aes128_block);
   assert (task->block_count > 0);
 
-  task->inout_buffer.d_ptr = context->buffer.data.d_ptr + context->buffer.to_encrypt_tail;
-  task->inout_buffer.k_ptr = context->buffer.data.k_ptr + context->buffer.to_encrypt_tail;
+  task->inout_buffer.d_ptr =
+          context->buffer.data.d_ptr + context->buffer.to_encrypt_tail;
+  task->inout_buffer.k_ptr =
+          context->buffer.data.k_ptr + context->buffer.to_encrypt_tail;
 
   /* Update the pointers and counters for next encryption task.  */
   context->buffer.to_encrypt_count -= task->block_count * sizeof (aes128_block);
@@ -758,7 +779,8 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
   KDEBUG ("have slots: %d\n", __free_task_slots (context->aes_dev));
 
   cmd_ptr.d_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
-  cmd_ptr.k_ptr = aes_dev->cmd_buffer.k_ptr + (cmd_ptr.d_ptr - aes_dev->cmd_buffer.d_ptr);
+  cmd_ptr.k_ptr =
+          aes_dev->cmd_buffer.k_ptr + (cmd_ptr.d_ptr - aes_dev->cmd_buffer.d_ptr);
   {
     uint32_t read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
     uint32_t write_ptr = cmd_ptr.d_ptr;
@@ -848,7 +870,8 @@ file_open (struct inode *i, struct file * f)
   f->private_data = context;
   context->lf.f = f;
 
-  KDEBUG ("assigned opened file to device %p at context %p\n", context->aes_dev, context);
+  KDEBUG ("assigned opened file to device %p at context %p\n",
+          context->aes_dev, context);
 
   retval = 0;
 exit:
@@ -960,14 +983,22 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
       goto exit;
     }
 
-  if /**/ (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT) context->mode = AESDEV_MODE_ECB_ENCRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT) context->mode = AESDEV_MODE_ECB_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CBC_ENCRYPT) context->mode = AESDEV_MODE_CBC_ENCRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CBC_DECRYPT) context->mode = AESDEV_MODE_CBC_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CFB_ENCRYPT) context->mode = AESDEV_MODE_CFB_ENCRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_CFB_DECRYPT) context->mode = AESDEV_MODE_CFB_DECRYPT;
-  else if (cmd == AESDEV_IOCTL_SET_OFB) /*****/ context->mode = AESDEV_MODE_OFB;
-  else if (cmd == AESDEV_IOCTL_SET_CTR) /*****/ context->mode = AESDEV_MODE_CTR;
+  if (cmd == AESDEV_IOCTL_SET_ECB_ENCRYPT)
+    context->mode = AESDEV_MODE_ECB_ENCRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_ECB_DECRYPT)
+    context->mode = AESDEV_MODE_ECB_DECRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CBC_ENCRYPT)
+    context->mode = AESDEV_MODE_CBC_ENCRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CBC_DECRYPT)
+    context->mode = AESDEV_MODE_CBC_DECRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CFB_ENCRYPT)
+    context->mode = AESDEV_MODE_CFB_ENCRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_CFB_DECRYPT)
+    context->mode = AESDEV_MODE_CFB_DECRYPT;
+  else if (cmd == AESDEV_IOCTL_SET_OFB)
+    context->mode = AESDEV_MODE_OFB;
+  else if (cmd == AESDEV_IOCTL_SET_CTR)
+    context->mode = AESDEV_MODE_CTR;
   else if (cmd == AESDEV_IOCTL_GET_STATE)
     {
       if (context->mode == AESDEV_MODE_ECB_DECRYPT ||
@@ -988,7 +1019,9 @@ file_ioctl (struct file *f, unsigned int cmd, unsigned long arg)
           goto exit;
         }
 
-      if (copy_to_user ((void *) arg, context->ks_buffer.k_ptr + sizeof (aes128_block), sizeof (aes128_block)))
+      if (copy_to_user ((void *) arg,
+                        context->ks_buffer.k_ptr + sizeof (aes128_block),
+                        sizeof (aes128_block)))
         {
           KDEBUG ("copy_to_user\n");
           retval = -EFAULT;
@@ -1223,7 +1256,12 @@ pci_probe (struct pci_dev *pci_dev, const struct pci_device_id * id)
   aes_devs[minor] = aes_dev;
 
   /* Do this at the very end. Since now, the device is available to user.  */
-  sys_dev = device_create (dev_class, NULL, MKDEV (major, minor), NULL, "aes%d", minor);
+  sys_dev = device_create (dev_class,
+                           NULL,
+                           MKDEV (major, minor),
+                           NULL,
+                           "aes%d",
+                           minor);
   if (IS_ERR_OR_NULL (sys_dev))
     {
       printk (KERN_WARNING "device_create\n");
