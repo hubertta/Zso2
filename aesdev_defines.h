@@ -57,8 +57,19 @@
 #define AESDRV_CMDBUFF_SIZE (AESDRV_CMDBUFF_SLOTS * sizeof (aes128_command))
 #define AESDRV_MAX_DEV_COUNT 0xFF
 
-#define AESDEV_STOP(aes_dev) iowrite32(0x00000000, aes_dev->bar0)
-#define AESDEV_START(aes_dev) iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0)
+#define AESDEV_STOP(aes_dev) do\
+  {\
+    iowrite32(0x00000000, aes_dev->bar0);\
+    iowrite32(0x00000000, aes_dev->bar0 + AESDEV_INTR_ENABLE);\
+  }\
+  while (0)
+
+#define AESDEV_START(aes_dev) do\
+  {\
+    iowrite32(AESDEV_ENABLE_FETCH_CMD | AESDEV_ENABLE_XFER_DATA, aes_dev->bar0);\
+    iowrite32(0x000000FF, aes_dev->bar0 + AESDEV_INTR_ENABLE);\
+  }\
+  while (0)
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((size_t)(write) - (size_t)(begin)) / 16)
 
