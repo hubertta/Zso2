@@ -532,8 +532,8 @@ file_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 
           _ret_queue =
                   wait_event_interruptible (context->buffer.read_queue,
-                                            move_completed_tasks (context) != 0 ||
-                                            mut_mode (context) == AESDEV_MODE_CLOSING);
+                                            mut_mode (context) == AESDEV_MODE_CLOSING
+                                            || move_completed_tasks (context) != 0);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.read_lock);
@@ -680,8 +680,8 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 
           _ret_queue =
                   wait_event_interruptible (context->buffer.write_queue,
-                                            mut_acb_free (&context->buffer) > 0 ||
-                                            mut_mode (context) == AESDEV_MODE_CLOSING);
+                                            mut_mode (context) == AESDEV_MODE_CLOSING
+                                            || mut_acb_free (&context->buffer) > 0);
           if (_ret_queue != 0)
             {
               mutex_unlock (&context->buffer.write_lock);
