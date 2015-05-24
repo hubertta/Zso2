@@ -73,6 +73,8 @@
 
 #define AESDEV_CMD_INDEXOF(begin, write) (((size_t)(write) - (size_t)(begin)) / 16)
 
+#define HAS_STATE(mode) ((mode) != AESDEV_MODE_ECB_ENCRYPT && mode != AESDEV_MODE_ECB_DECRYPT)
+
 #if 0
 #define KDEBUG(msg, ...) do\
     {\
@@ -85,6 +87,9 @@
 #define DNOTIF_ENTER_FUN KDEBUG ("entering\n")
 #define DNOTIF_LEAVE_FUN KDEBUG ("leaving\n")
 
-#define HAS_STATE(mode) ((mode) != AESDEV_MODE_ECB_ENCRYPT && mode != AESDEV_MODE_ECB_DECRYPT)
 
+#if 1
 #define assert(b) if (!(b)) printk (KERN_WARNING "ASSERT FAILED: %s\n", #b)
+#else
+#define assert(b)
+#endif

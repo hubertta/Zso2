@@ -389,9 +389,6 @@ irq_handler (int irq, void *ptr)
   unsigned long irq_flags;
   char dev_running;
 
-  //DNOTIF_ENTER_FUN;
-
-  /* TODO Can this be not my pointer?  */
   aes_dev = ptr;
 
   /*** CRITICAL SECTION ***/
@@ -421,17 +418,12 @@ irq_handler (int irq, void *ptr)
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
-    //KDEBUG ("checking task %p at %d, read=%d running=%d\n",
-    //        task, task->cmd_index,
-    //        read_index,
-    //        dev_running);
     /* Is this task completed?
        If the device is not running, it means that all tasks have been
        completed. Otherwise I keep iterating until I see uncompleted task.  */
     if (dev_running &&
         (task->cmd_index == read_index ||
          (task->cmd_index + 1) % AESDRV_CMDBUFF_SLOTS == read_index))
-      //      if (!(1 << task->cmd_index & intr))
       break;
 
     list_del (&task->task_list);
@@ -447,7 +439,6 @@ irq_handler (int irq, void *ptr)
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   /*** END CRITICAL SECTION ***/
-  //DNOTIF_LEAVE_FUN;
   return IRQ_HANDLED;
 }
 /*****************************************************************************/
