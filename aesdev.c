@@ -1326,7 +1326,7 @@ aesdrv_init (void)
   if (IS_ERR_VALUE (major))
     {
       printk (KERN_WARNING "register_chrdev\n");
-      return ret;
+      return major;
     }
 
   /* Sysfs class.  */
