@@ -88,7 +88,7 @@
 #define DNOTIF_LEAVE_FUN KDEBUG ("leaving\n")
 
 
-#if 1
+#if 0
 #define assert(b) if (!(b)) printk (KERN_WARNING "ASSERT FAILED: %s\n", #b)
 #else
 #define assert(b)
