@@ -1,0 +1,14 @@
+ZSO 2014/2015 Zadanie 2
+Hubert Tarasiuk
+
+Zaimplementowałem program w wersji z wykorzystaniem bloku wczytywania komend.
+Jest obsługa bufora komend dowolnej wielkości (nieograniczona do 8 przez liczbę
+możliwych przerwań).
+Nie wspieram wyjmowania urządzenia w momencie gdy są otwarte pliki (chyba nie
+da się tego dobrze zrobić) i w takim przypadku wywołuję funkcję panic.
+Ze względu na wymaganie obsługi dostępów współbieżnych jest dosyć sporo
+synchronizacji (w szczególności dwa globalne muteksy na kasowanie urządzeń i na
+kasowanie kontekstów są potrzebne na przykład na wypadek odpalenia close w
+trakcie funkcji read/write; lub aby wykryć open w trakcie pci_remove).
+Jeżeli chodzi o szczegóły implementacyjne, to w kodzie dałem dosyć dużo
+komentarzy.
