@@ -389,7 +389,7 @@ irq_handler (int irq, void *ptr)
   unsigned long irq_flags;
   char dev_running;
 
-  DNOTIF_ENTER_FUN;
+  //DNOTIF_ENTER_FUN;
 
   /* TODO Can this be not my pointer?  */
   aes_dev = ptr;
@@ -447,7 +447,7 @@ irq_handler (int irq, void *ptr)
 
   spin_unlock_irqrestore (&aes_dev->lock, irq_flags);
   /*** END CRITICAL SECTION ***/
-  DNOTIF_LEAVE_FUN;
+  //DNOTIF_LEAVE_FUN;
   return IRQ_HANDLED;
 }
 /*****************************************************************************/
