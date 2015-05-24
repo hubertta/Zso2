@@ -42,7 +42,8 @@ const static struct file_operations aes_fops = {
   .open = file_open,
   .release = file_release,
   .unlocked_ioctl = file_ioctl,
-  .compat_ioctl = file_ioctl
+  .compat_ioctl = file_ioctl,
+  .llseek = no_llseek          
 };
 const static struct pci_device_id pci_ids[] = {
   {PCI_DEVICE (AESDEV_VENDOR_ID, AESDEV_DEVICE_ID)},
