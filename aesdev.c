@@ -43,7 +43,7 @@ const static struct file_operations aes_fops = {
   .release = file_release,
   .unlocked_ioctl = file_ioctl,
   .compat_ioctl = file_ioctl,
-  .llseek = no_llseek          
+  .llseek = no_llseek
 };
 const static struct pci_device_id pci_ids[] = {
   {PCI_DEVICE (AESDEV_VENDOR_ID, AESDEV_DEVICE_ID)},
@@ -421,10 +421,10 @@ irq_handler (int irq, void *ptr)
   /* Move completed tasks to completed tasks list.  */
   list_for_each_entry_safe (task, temp_task, &aes_dev->task_list_head, task_list)
   {
-    KDEBUG ("checking task %p at %d, read=%d running=%d\n",
-            task, task->cmd_index,
-            read_index,
-            dev_running);
+    //KDEBUG ("checking task %p at %d, read=%d running=%d\n",
+    //        task, task->cmd_index,
+    //        read_index,
+    //        dev_running);
     /* Is this task completed?
        If the device is not running, it means that all tasks have been
        completed. Otherwise I keep iterating until I see uncompleted task.  */
@@ -777,18 +777,11 @@ file_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
       spin_lock_irqsave (&context->aes_dev->lock, irq_flags);
     }
 
-  KDEBUG ("have slots: %d\n", __free_task_slots (context->aes_dev));
+  //KDEBUG ("have slots: %d\n", __free_task_slots (context->aes_dev));
 
   cmd_ptr.d_ptr = ioread32 (bar0 + AESDEV_CMD_WRITE_PTR);
   cmd_ptr.k_ptr =
           aes_dev->cmd_buffer.k_ptr + (cmd_ptr.d_ptr - aes_dev->cmd_buffer.d_ptr);
-  {
-    uint32_t read_ptr = ioread32 (bar0 + AESDEV_CMD_READ_PTR);
-    uint32_t write_ptr = cmd_ptr.d_ptr;
-    assert (write_ptr + sizeof (aes128_command) != read_ptr);
-    if (write_ptr + sizeof (aes128_command) % AESDRV_CMDBUFF_SIZE == read_ptr)
-      printk (KERN_WARNING "write=%d read=%d\n", write_ptr, read_ptr);
-  }
 
   task->cmd_index = AESDEV_CMD_INDEXOF (aes_dev->cmd_buffer.d_ptr, cmd_ptr.d_ptr);
 
